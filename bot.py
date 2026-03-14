@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime
 import re
 
-TOKEN = "PUT_YOUR_NEW_TOKEN_HERE"
+TOKEN = "8764568325:AAFs-6ErToz0zDv7AZTubizeSx9m7UnvNp8"
 
 rate = 100
 
