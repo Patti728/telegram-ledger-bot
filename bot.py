@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS usdt(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 chat_id TEXT,
 user TEXT,
-type TEXT,
 amount REAL,
 time TEXT
 )
@@ -26,7 +25,6 @@ CREATE TABLE IF NOT EXISTS inr(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 chat_id TEXT,
 user TEXT,
-type TEXT,
 amount REAL,
 time TEXT
 )
@@ -35,23 +33,15 @@ time TEXT
 conn.commit()
 
 
-def parse_amount(text):
+def clean_amount(text):
     return float(
         text.replace(",", "")
-        .replace("inr", "")
-        .replace("u", "")
-        .replace("+", "")
-        .replace("-", "")
+        .replace("inr","")
+        .replace("u","")
+        .replace("+","")
+        .replace("-","")
         .strip()
     )
-
-
-def format_inr(v):
-    return f"₹{v:,.2f}"
-
-
-def format_usdt(v):
-    return f"{v:,.2f} U"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -62,132 +52,124 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global rate
 
-    text = update.message.text.lower()
+    text = update.message.text.lower().strip()
     user = update.message.from_user.username or update.message.from_user.first_name
     chat_id = update.message.chat.id
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
 
-        # INR ADD
-        if text.startswith("+") and "inr" in text:
-
-            amount = parse_amount(text)
-
-            cursor.execute(
-                "INSERT INTO inr(chat_id,user,amount,time) VALUES(?,?,?,?)",
-                (chat_id, user, amount, now)
-            )
-            conn.commit()
-
-            await update.message.reply_text(
-f"""
-💰 INR CREDITED
-
-👤 {user}
-🕒 {now}
-
-Amount: +{format_inr(amount)}
-
-⚡ Powered by Astryx Pay
-"""
-            )
-
-        # INR DEDUCT
-        elif text.startswith("-") and "inr" in text:
-
-            amount = parse_amount(text)
-
-            cursor.execute(
-                "INSERT INTO inr(chat_id,user,amount,time) VALUES(?,?,?,?)",
-                (chat_id, user, -amount, now)
-            )
-            conn.commit()
-
-            await update.message.reply_text(
-f"""
-💸 INR DEBITED
-
-👤 {user}
-🕒 {now}
-
-Amount: -{format_inr(amount)}
-
-⚡ Powered by Astryx Pay
-"""
-            )
-
-        # USDT ADD
-        elif text.startswith("+") and "u" in text:
-
-            amount = parse_amount(text)
-
-            cursor.execute(
-                "INSERT INTO usdt(chat_id,user,type,amount,time) VALUES(?,?,?,?,?)",
-                (chat_id, user, "IN", amount, now)
-            )
-            conn.commit()
-
-            await update.message.reply_text(
-f"""
-💎 USDT RECEIVED
-
-👤 {user}
-🕒 {now}
-
-Amount: +{format_usdt(amount)}
-
-⚡ Powered by Astryx Pay
-"""
-            )
-
-        # USDT SEND
-        elif text.startswith("-") and "u" in text:
-
-            amount = parse_amount(text)
-
-            cursor.execute(
-                "INSERT INTO usdt(chat_id,user,type,amount,time) VALUES(?,?,?,?,?)",
-                (chat_id, user, "OUT", amount, now)
-            )
-            conn.commit()
-
-            await update.message.reply_text(
-f"""
-💎 USDT SENT
-
-👤 {user}
-🕒 {now}
-
-Amount: -{format_usdt(amount)}
-
-⚡ Powered by Astryx Pay
-"""
-            )
-
-        # SET RATE
-        elif text.startswith("rate"):
+        # RATE
+        if text.startswith("rate"):
 
             rate = float(text.split()[1])
 
-            await update.message.reply_text(
-f"""
-📊 RATE UPDATED
+            await update.message.reply_text(f"📊 Rate set to ₹{rate}")
+            return
 
-💱 1 USDT = ₹{rate}
-"""
+
+        # ADD USDT
+        if text.startswith("+") and "u" in text:
+
+            amount = clean_amount(text)
+
+            cursor.execute(
+                "INSERT INTO usdt(chat_id,user,amount,time) VALUES(?,?,?,?)",
+                (chat_id,user,amount,now)
+            )
+            conn.commit()
+
+
+        # SUBTRACT USDT
+        elif text.startswith("-") and "u" in text:
+
+            amount = clean_amount(text)
+
+            cursor.execute(
+                "INSERT INTO usdt(chat_id,user,amount,time) VALUES(?,?,?,?)",
+                (chat_id,user,-amount,now)
+            )
+            conn.commit()
+
+
+        # ADD INR
+        elif text.startswith("+") and "inr" in text:
+
+            amount = clean_amount(text)
+
+            cursor.execute(
+                "INSERT INTO inr(chat_id,user,amount,time) VALUES(?,?,?,?)",
+                (chat_id,user,amount,now)
+            )
+            conn.commit()
+
+
+        # SUBTRACT INR
+        elif text.startswith("-") and "inr" in text:
+
+            amount = clean_amount(text)
+
+            cursor.execute(
+                "INSERT INTO inr(chat_id,user,amount,time) VALUES(?,?,?,?)",
+                (chat_id,user,-amount,now)
+            )
+            conn.commit()
+
+
+        # CLEAR LEDGER
+        elif text == "clear":
+
+            cursor.execute("DELETE FROM usdt")
+            cursor.execute("DELETE FROM inr")
+            conn.commit()
+
+            await update.message.reply_text("🧹 Ledger cleared")
+            return
+
+
+        # SHOW LEDGER
+        if text == "ledger":
+
+            cursor.execute("SELECT time,user,amount FROM usdt ORDER BY id")
+            usdt_rows = cursor.fetchall()
+
+            cursor.execute("SELECT time,user,amount FROM inr ORDER BY id")
+            inr_rows = cursor.fetchall()
+
+            usdt_log = "\n".join(
+                [f"{r[0]} | {r[1]} | {r[2]} U" for r in usdt_rows]
             )
 
+            inr_log = "\n".join(
+                [f"{r[0]} | {r[1]} | ₹{r[2]}" for r in inr_rows]
+            )
+
+            await update.message.reply_text(
+f"""
+💎 ASTRYX PAY LEDGER
+
+━━━━━━━━━━━━
+
+💵 USDT Transactions
+{usdt_log}
+
+━━━━━━━━━━━━
+
+💰 INR Transactions
+{inr_log}
+
+━━━━━━━━━━━━
+⚡ Powered by Astryx Pay
+"""
+            )
+            return
+
+
         # BALANCE
-        elif text == "balance":
+        if text == "balance" or text.startswith("+") or text.startswith("-"):
 
-            cursor.execute("SELECT SUM(amount) FROM usdt WHERE type='IN'")
-            usdt_in = cursor.fetchone()[0] or 0
-
-            cursor.execute("SELECT SUM(amount) FROM usdt WHERE type='OUT'")
-            usdt_out = cursor.fetchone()[0] or 0
-
-            usdt_balance = usdt_in - usdt_out
+            cursor.execute("SELECT SUM(amount) FROM usdt")
+            usdt_balance = cursor.fetchone()[0] or 0
 
             cursor.execute("SELECT SUM(amount) FROM inr")
             inr_balance = cursor.fetchone()[0] or 0
@@ -197,53 +179,23 @@ f"""
 
             await update.message.reply_text(
 f"""
-📊 ASTRYX PAY SUMMARY
+📊 SUMMARY
 
-💵 USDT Balance : {format_usdt(usdt_balance)}
-💰 INR Balance : {format_inr(inr_balance)}
+💵 USDT Balance : {usdt_balance} U
+💰 INR Balance : ₹{inr_balance:,.2f}
 
 💱 Rate : ₹{rate}
 
-💎 USDT Value : {format_inr(usdt_value)}
+💎 USDT Value : ₹{usdt_value:,.2f}
 
-⚠ Outstanding : {format_inr(outstanding)}
-
-⚡ Powered by Astryx Pay
-"""
-            )
-
-        # REPORT
-        elif text == "report":
-
-            cursor.execute("SELECT time,user,amount FROM usdt ORDER BY id DESC LIMIT 10")
-            usdt_rows = cursor.fetchall()
-
-            cursor.execute("SELECT time,user,amount FROM inr ORDER BY id DESC LIMIT 10")
-            inr_rows = cursor.fetchall()
-
-            usdt_log = "\n".join([f"{r[0]} | {r[1]} | {r[2]} U" for r in usdt_rows])
-            inr_log = "\n".join([f"{r[0]} | {r[1]} | ₹{r[2]}" for r in inr_rows])
-
-            await update.message.reply_text(
-f"""
-📊 ASTRYX PAY LEDGER
-
-━━━━━━━━━━
-
-💵 USDT Transactions
-{usdt_log}
-
-━━━━━━━━━━
-
-💰 INR Transactions
-{inr_log}
+⚠ Outstanding : ₹{outstanding:,.2f}
 
 ⚡ Powered by Astryx Pay
 """
             )
 
     except:
-        await update.message.reply_text("❌ Invalid Command")
+        await update.message.reply_text("❌ Invalid command")
 
 
 app = ApplicationBuilder().token(TOKEN).build()
