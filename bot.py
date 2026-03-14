@@ -2,10 +2,11 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import sqlite3
 from datetime import datetime
+import re
 
-TOKEN = "8764568325:AAFs-6ErToz0zDv7AZTubizeSx9m7UnvNp8"
+TOKEN = "PUT_YOUR_NEW_TOKEN_HERE"
 
-rate = 101
+rate = 100
 
 conn = sqlite3.connect("ledger.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -15,7 +16,6 @@ CREATE TABLE IF NOT EXISTS usdt(
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 chat_id TEXT,
 user TEXT,
-type TEXT,
 amount REAL,
 time TEXT
 )
@@ -35,7 +35,19 @@ conn.commit()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ledger bot ready")
+
+    await update.message.reply_text(
+        "🚀 *Astryx Pay Ledger Bot Ready*\n\n"
+        "Commands:\n"
+        "+500u\n"
+        "-500u\n"
+        "+10000inr\n"
+        "-10000inr\n\n"
+        "/balance\n"
+        "/rate 102\n"
+        "/clear",
+        parse_mode="Markdown"
+    )
 
 
 async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,12 +55,16 @@ async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global rate
 
     if len(context.args) == 0:
-        await update.message.reply_text("Usage: /rate 101")
+        await update.message.reply_text("⚠ Usage: /rate 102")
         return
 
     rate = float(context.args[0])
 
-    await update.message.reply_text(f"Rate set to {rate}")
+    await update.message.reply_text(
+        f"💱 *Exchange Rate Updated*\n\n"
+        f"1 USDT = ₹{rate}",
+        parse_mode="Markdown"
+    )
 
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,13 +75,13 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cursor.execute("DELETE FROM inr WHERE chat_id=?", (chat,))
     conn.commit()
 
-    await update.message.reply_text("Ledger cleared for this group")
+    await update.message.reply_text("🧹 Ledger cleared for this group")
 
 
 def build_report(chat):
 
     usdt_rows = cursor.execute(
-        "SELECT user,type,amount,time FROM usdt WHERE chat_id=?",
+        "SELECT user,amount,time FROM usdt WHERE chat_id=?",
         (chat,)
     ).fetchall()
 
@@ -74,63 +90,66 @@ def build_report(chat):
         (chat,)
     ).fetchall()
 
-    deposits = []
-    distributions = []
+    usdt_total = 0
+    inr_total = 0
+
+    dep_list = []
     inr_list = []
 
-    total_dep = 0
-    total_dist = 0
-    total_inr = 0
+    for user, amount, time in usdt_rows:
 
-    for r in usdt_rows:
+        sign = "🟢 +" if amount >= 0 else "🔴 -"
 
-        user, typ, amount, time = r
+        dep_list.append(f"{time} | {user} | {sign}{abs(amount)} U")
 
-        if typ == "deposit":
-            deposits.append(f"{time} | {user} | +{amount}U")
-            total_dep += amount
+        usdt_total += amount
 
-        else:
-            distributions.append(f"{time} | {user} | -{amount}U")
-            total_dist += amount
+    for user, amount, time in inr_rows:
 
+        sign = "🟢 +" if amount >= 0 else "🔴 -"
 
-    for r in inr_rows:
+        inr_list.append(f"{time} | {user} | {sign}₹{abs(amount)}")
 
-        user, amount, time = r
-
-        sign = "+" if amount >= 0 else "-"
-        inr_list.append(f"{time} | {user} | {sign}{abs(amount)} INR")
-
-        total_inr += amount
+        inr_total += amount
 
 
-    outstanding = (total_dep - total_dist) * rate - total_inr
+    usdt_value = usdt_total * rate
+
+    outstanding = usdt_value - inr_total
 
 
     message = f"""
-Deposits (Total: {len(deposits)})
+💎 *ASTRYX PAY LEDGER*
 
-""" + "\n".join(deposits) + """
+━━━━━━━━━━━━━━
 
-----------------------
+💵 *USDT Transactions*
+Total: {len(dep_list)}
 
-Distributions (Total: """ + str(len(distributions)) + """)
+""" + "\n".join(dep_list) + f"""
 
-""" + "\n".join(distributions) + """
+━━━━━━━━━━━━━━
 
-----------------------
-
-INR Transactions (Total: """ + str(len(inr_list)) + """)
+💰 *INR Transactions*
+Total: {len(inr_list)}
 
 """ + "\n".join(inr_list) + f"""
 
-Total deposits: {total_dep} U
-Total distributions: {total_dist} U
+━━━━━━━━━━━━━━
 
-INR Balance: ₹{total_inr}
+📊 *SUMMARY*
 
-Outstanding: ₹{outstanding}
+💵 USDT Balance : {usdt_total} U
+💰 INR Balance : ₹{inr_total}
+
+💱 Rate : ₹{rate}
+
+💎 USDT Value : ₹{usdt_value}
+
+⚠ *Outstanding : ₹{outstanding}*
+
+━━━━━━━━━━━━━━
+⚡ Powered by Astryx Pay
 """
 
     return message
@@ -139,78 +158,56 @@ Outstanding: ₹{outstanding}
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.lower().strip()
+
     user = update.message.from_user.first_name
+
     chat = str(update.message.chat_id)
 
     time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    clean = text.replace(" ", "")
+    pattern = r'^([+-])\s*(\d+)\s*(inr|₹|u|usdt)?$'
 
-    if "inr" in clean:
+    match = re.match(pattern, text)
 
-        value = clean.replace("inr","")
+    if not match:
+        return
 
-        sign = 1
+    sign = match.group(1)
 
-        if value.startswith("-"):
-            sign = -1
-            value = value[1:]
+    amount = float(match.group(2))
 
-        elif value.startswith("+"):
-            value = value[1:]
+    currency = match.group(3)
 
-        if value.isdigit():
+    if sign == "-":
+        amount = -amount
 
-            amount = float(value) * sign
+    if currency is None:
+        currency = "u"
 
-            cursor.execute(
-                "INSERT INTO inr(chat_id,user,amount,time) VALUES(?,?,?,?)",
-                (chat,user,amount,time)
-            )
+    if currency in ["inr","₹"]:
 
-            conn.commit()
+        cursor.execute(
+            "INSERT INTO inr(chat_id,user,amount,time) VALUES(?,?,?,?)",
+            (chat,user,amount,time)
+        )
 
-            await update.message.reply_text(build_report(chat))
+        conn.commit()
+
+        await update.message.reply_text(build_report(chat), parse_mode="Markdown")
 
         return
 
 
-    if clean.startswith("+"):
+    if currency in ["u","usdt"]:
 
-        amount = clean.replace("+","").replace("u","")
+        cursor.execute(
+            "INSERT INTO usdt(chat_id,user,amount,time) VALUES(?,?,?,?)",
+            (chat,user,amount,time)
+        )
 
-        if amount.isdigit():
+        conn.commit()
 
-            amount = float(amount)
-
-            cursor.execute(
-                "INSERT INTO usdt(chat_id,user,type,amount,time) VALUES(?,?,?,?,?)",
-                (chat,user,"deposit",amount,time)
-            )
-
-            conn.commit()
-
-            await update.message.reply_text(build_report(chat))
-
-        return
-
-
-    if clean.startswith("-"):
-
-        amount = clean.replace("-","").replace("u","")
-
-        if amount.isdigit():
-
-            amount = float(amount)
-
-            cursor.execute(
-                "INSERT INTO usdt(chat_id,user,type,amount,time) VALUES(?,?,?,?,?)",
-                (chat,user,"distribution",amount,time)
-            )
-
-            conn.commit()
-
-            await update.message.reply_text(build_report(chat))
+        await update.message.reply_text(build_report(chat), parse_mode="Markdown")
 
         return
 
@@ -219,7 +216,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat = str(update.message.chat_id)
 
-    await update.message.reply_text(build_report(chat))
+    await update.message.reply_text(build_report(chat), parse_mode="Markdown")
 
 
 app = ApplicationBuilder().token(TOKEN).build()
@@ -231,7 +228,6 @@ app.add_handler(CommandHandler("clear", clear))
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-print("BOT RUNNING")
+print("🚀 BOT RUNNING")
 
 app.run_polling()
-
