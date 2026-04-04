@@ -49,7 +49,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         return False
 
-# ================= SPLIT LOGIC (USDT ONLY) ================= #
+# ================= SPLIT LOGIC ================= #
 
 def calculate_pending(chat_id):
     conn = get_conn()
@@ -109,82 +109,33 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🗑 Ledger Cleared")
 
-# ================= LEDGER ================= #
+# ================= BALANCE ================= #
 
-async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
 
     chat_id = str(update.message.chat.id)
 
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT user_name, currency, amount
-        FROM ledger
-        WHERE chat_id=%s
-        ORDER BY id
-    """, (chat_id,))
-
-    rows = cur.fetchall()
-    conn.close()
-
-    usdt_list, inr_list = [], []
-    total_usdt, total_inr = 0, 0
-
-    for user, currency, amount in rows:
-        if currency == "USDT":
-            usdt_list.append((user, amount))
-            total_usdt += amount
-        else:
-            inr_list.append((user, amount))
-            total_inr += amount
-
-    # 🔥 CORRECT FINAL LOGIC
     pending_usdt = calculate_pending(chat_id)
 
-    usdt_pending = abs(pending_usdt) if pending_usdt != 0 else 0
+    if pending_usdt > 0:
+        usdt_pending = pending_usdt
+        inr_pending = pending_usdt * RATE
+    else:
+        usdt_pending = abs(pending_usdt)
+        inr_pending = 0
+
     status = "🔴 Pending" if usdt_pending > 0 else "🟢 Balanced"
 
-    # ================= UI ================= #
+    await update.message.reply_text(f"""
+📊 PAYUTECH BALANCE | 📅 {datetime.now().strftime('%d %b %Y')}
 
-    text = f"""📊 PECUPAY LEDGER | 📅 {datetime.now().strftime('%d %b %Y')}
-
-━━━━━━━━━━━━━━
-
-💵 USDT
-"""
-
-    for i, (user, amt) in enumerate(usdt_list, 1):
-        text += f"{i}. 💵 {amt:.2f} U → {user}\n"
-
-    text += "\n━━━━━━━━━━━━━━\n\n💰 INR\n"
-
-    for i, (user, amt) in enumerate(inr_list, 1):
-        text += f"{i}. 💰 ₹{amt:,.0f} → {user}\n"
-
-    text += f"""
-
-━━━━━━━━━━━━━━
-
-📈 SUMMARY
-
-💵 USDT : {total_usdt:.2f} U
-💰 INR  : ₹{total_inr:,.0f}
-
-💱 Rate : ₹{RATE}
-💰 Value: ₹{total_usdt * RATE:,.0f}
-
-🔄 USDT Pending: {usdt_pending:.2f} U
+🔄 USDT Pending : {usdt_pending:.2f} U
+💰 INR Pending  : ₹{inr_pending:,.0f}
 
 Status : {status}
-
-━━━━━━━━━━━━━━
-⚡ PAYUTECH BOT
-"""
-
-    await update.message.reply_text(text)
+""")
 
 # ================= TRANSACTION ================= #
 
@@ -222,8 +173,11 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    # 🔥 ALWAYS SHOW FULL LEDGER
-    await ledger(update, context)
+    # ✅ ONLY CONFIRM ENTRY (NO FULL LEDGER)
+    if currency == "USDT":
+        await update.message.reply_text(f"✅ {amount:.2f} U added @ ₹{RATE}")
+    else:
+        await update.message.reply_text(f"✅ ₹{amount:,.0f} added")
 
 # ================= MAIN ================= #
 
@@ -234,7 +188,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("rate", set_rate))
-    app.add_handler(CommandHandler("ledger", ledger))
+    app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("clear", clear))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
