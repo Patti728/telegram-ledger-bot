@@ -1,5 +1,6 @@
 import os
 import psycopg2
+import re
 from datetime import datetime
 
 from telegram import Update
@@ -16,8 +17,6 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 RATE = 100
-
-print("DB URL:", DATABASE_URL)
 
 # ================= DB ================= #
 
@@ -42,7 +41,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ================= ADMIN CHECK ================= #
+# ================= ADMIN ================= #
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -54,16 +53,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         return False
 
-# ================= HELPERS ================= #
-
-def clean_amount(text):
-    return float(
-        text.replace(",", "")
-        .replace("inr", "")
-        .replace("u", "")
-        .replace("+", "")
-        .strip()
-    )
+# ================= SUMMARY ================= #
 
 def get_summary(chat_id):
     conn = get_conn()
@@ -78,7 +68,6 @@ def get_summary(chat_id):
     conn.close()
 
     value = usdt * RATE
-
     inr_pending = max(value - inr, 0)
     usdt_pending = max((inr - value) / RATE, 0) if inr > value else 0
 
@@ -93,7 +82,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not await is_admin(update, context):
         return
-
     await update.message.reply_text("🚀 PAYUTECH BOT ACTIVE")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +89,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = str(update.message.chat.id)
-    usdt, inr, value, inr_pending, usdt_pending, status = get_summary(chat_id)
+    usdt, inr, value, inr_p, usdt_p, status = get_summary(chat_id)
 
     await update.message.reply_text(f"""
 📊 PAYUTECH SUMMARY | 📅 {datetime.now().strftime("%d %b %Y")}
@@ -112,14 +100,40 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💱 Rate : ₹{RATE}
 💵 Value: ₹{value:,.0f}
 
-⚖️ INR Pending : ₹{inr_pending:,.0f}
-🔄 USDT Pending: {usdt_pending:.2f} U
+⚖️ INR Pending : ₹{inr_p:,.0f}
+🔄 USDT Pending: {usdt_p:.2f} U
 
 Status : {status}
-
-━━━━━━━━━━━━━━
-⚡ PAYUTECH BOT
 """)
+
+async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await summary(update, context)
+
+async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context):
+        return
+
+    chat_id = str(update.message.chat.id)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text("🗑 Ledger Cleared")
+
+async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global RATE
+
+    if not await is_admin(update, context):
+        return
+
+    try:
+        RATE = float(context.args[0])
+        await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
+    except:
+        await update.message.reply_text("❌ Usage: /rate 100")
 
 # ================= TRANSACTION ================= #
 
@@ -129,57 +143,43 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
 
-    text = update.message.text.lower()
+    text = update.message.text.lower().strip()
     user = update.message.from_user.username or update.message.from_user.first_name
     chat_id = str(update.message.chat.id)
+
+    match = re.match(r"([+-]?)([\d,\.]+)\s*(u|inr)?$", text)
+    if not match:
+        return
+
+    sign = match.group(1)
+    amount = float(match.group(2).replace(",", ""))
+    currency = match.group(3) or "inr"
+
+    if sign == "-":
+        amount = -amount
 
     conn = get_conn()
     cur = conn.cursor()
 
-    try:
-        if "u" in text:
-            amount = clean_amount(text)
+    if currency == "u":
+        cur.execute("INSERT INTO ledger VALUES (DEFAULT,%s,%s,'USDT',%s,DEFAULT)", (chat_id, user, amount))
+        msg = f"{'➖' if amount<0 else '✅'} 💵 {abs(amount):.2f} U {'deducted' if amount<0 else 'added'}"
 
-            cur.execute(
-                "INSERT INTO ledger (chat_id,user_name,currency,amount) VALUES (%s,%s,'USDT',%s)",
-                (chat_id, user, amount)
-            )
+    else:
+        cur.execute("INSERT INTO ledger VALUES (DEFAULT,%s,%s,'INR',%s,DEFAULT)", (chat_id, user, amount))
+        msg = f"{'➖' if amount<0 else '✅'} 💰 ₹{abs(amount):,.0f} {'deducted' if amount<0 else 'added'}"
 
-            msg = f"✅ 💵 {amount:.2f} U added"
+    conn.commit()
+    conn.close()
 
-        elif "inr" in text:
-            amount = clean_amount(text)
-
-            cur.execute(
-                "INSERT INTO ledger (chat_id,user_name,currency,amount) VALUES (%s,%s,'INR',%s)",
-                (chat_id, user, amount)
-            )
-
-            msg = f"✅ 💰 ₹{amount:,.0f} added"
-
-        else:
-            conn.close()
-            return
-
-        conn.commit()
-        conn.close()
-
-        await update.message.reply_text(msg)
-        await summary(update, context)
-
-    except Exception as e:
-        conn.close()
-        print("ERROR:", e)
-        await update.message.reply_text("❌ Transaction Error")
+    await update.message.reply_text(msg)
+    await summary(update, context)
 
 # ================= MAIN ================= #
 
 def main():
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN not set")
-
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL not set")
+    if not BOT_TOKEN or not DATABASE_URL:
+        raise Exception("Missing ENV variables")
 
     init_db()
 
@@ -187,13 +187,14 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(CommandHandler("ledger", ledger))
+    app.add_handler(CommandHandler("clear", clear))
+    app.add_handler(CommandHandler("rate", set_rate))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
 
-    print("🚀 PAYUTECH BOT Running Stable...")
-
+    print("🚀 PAYUTECH BOT RUNNING")
     app.run_polling(drop_pending_updates=True)
-
-# ================= RUN ================= #
 
 if __name__ == "__main__":
     main()
