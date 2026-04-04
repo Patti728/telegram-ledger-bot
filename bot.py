@@ -16,6 +16,9 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+OWNER_ID = 123456789  # 🔥 CHANGE THIS (your telegram id)
+
 RATE = 100
 
 # ================= DB ================= #
@@ -34,6 +37,7 @@ def init_db():
         user_name TEXT,
         currency TEXT,
         amount FLOAT,
+        rate FLOAT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -53,27 +57,62 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         return False
 
-# ================= SUMMARY ================= #
+# ================= SPLIT LOGIC ================= #
 
-def get_summary(chat_id):
+def calculate_pending(chat_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE chat_id=%s AND currency='USDT'", (chat_id,))
-    usdt = cur.fetchone()[0]
+    cur.execute("""
+        SELECT rate,
+        SUM(CASE WHEN currency='USDT' THEN amount ELSE 0 END),
+        SUM(CASE WHEN currency='INR' THEN amount ELSE 0 END)
+        FROM ledger
+        WHERE chat_id=%s
+        GROUP BY rate
+    """, (chat_id,))
 
-    cur.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE chat_id=%s AND currency='INR'", (chat_id,))
-    inr = cur.fetchone()[0]
-
+    rows = cur.fetchall()
     conn.close()
 
-    value = usdt * RATE
-    inr_pending = max(value - inr, 0)
-    usdt_pending = max((inr - value) / RATE, 0) if inr > value else 0
+    total = 0
+    for rate, usdt, inr in rows:
+        usdt = usdt or 0
+        inr = inr or 0
+        total += (inr / rate) - usdt
 
-    status = "🟢 Balanced" if inr_pending == 0 and usdt_pending == 0 else "🔴 Pending"
+    return total
 
-    return usdt, inr, value, inr_pending, usdt_pending, status
+# ================= OWNER PANEL ================= #
+
+def get_owner_stats():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT 
+        SUM(CASE WHEN currency='USDT' THEN amount ELSE 0 END),
+        SUM(CASE WHEN currency='INR' THEN amount ELSE 0 END)
+        FROM ledger
+    """)
+
+    usdt, inr = cur.fetchone()
+    conn.close()
+
+    return usdt or 0, inr or 0
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != OWNER_ID:
+        return
+
+    usdt, inr = get_owner_stats()
+
+    await update.message.reply_text(f"""
+📊 OWNER DASHBOARD
+
+💵 Total USDT Traded : {usdt:.2f} U
+💰 Total INR Volume  : ₹{inr:,.0f}
+""")
 
 # ================= COMMANDS ================= #
 
@@ -82,31 +121,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not await is_admin(update, context):
         return
+
     await update.message.reply_text("🚀 PAYUTECH BOT ACTIVE")
+
+async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global RATE
+
+    if not await is_admin(update, context):
+        return
+
+    try:
+        RATE = float(context.args[0])
+        await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
+    except:
+        await update.message.reply_text("❌ Usage: /rate 95")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
 
     chat_id = str(update.message.chat.id)
-    usdt, inr, value, inr_p, usdt_p, status = get_summary(chat_id)
+    pending = calculate_pending(chat_id)
+
+    status = "🟢 Balanced" if abs(pending) < 1 else "🔴 Pending"
 
     await update.message.reply_text(f"""
 📊 PAYUTECH SUMMARY | 📅 {datetime.now().strftime("%d %b %Y")}
 
-💵 USDT : {usdt:.2f} U
-💰 INR  : ₹{inr:,.0f}
-
-💱 Rate : ₹{RATE}
-💵 Value: ₹{value:,.0f}
-
-⚖️ INR Pending : ₹{inr_p:,.0f}
-🔄 USDT Pending: {usdt_p:.2f} U
+💼 Net Pending : {pending:.2f} U
 
 Status : {status}
 """)
 
-async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await summary(update, context)
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,17 +170,50 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🗑 Ledger Cleared")
 
-async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global RATE
+# ================= LEDGER ================= #
 
+async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
 
-    try:
-        RATE = float(context.args[0])
-        await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
-    except:
-        await update.message.reply_text("❌ Usage: /rate 100")
+    chat_id = str(update.message.chat.id)
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT rate,
+        SUM(CASE WHEN currency='USDT' THEN amount ELSE 0 END),
+        SUM(CASE WHEN currency='INR' THEN amount ELSE 0 END)
+        FROM ledger
+        WHERE chat_id=%s
+        GROUP BY rate
+        ORDER BY rate
+    """, (chat_id,))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    text = "📒 PAYUTECH DAILY LEDGER\n\n"
+    total = 0
+
+    for i, (rate, usdt, inr) in enumerate(rows, 1):
+        usdt = usdt or 0
+        inr = inr or 0
+
+        diff = (inr / rate) - usdt
+        total += diff
+
+        text += f"""Day {i} (Rate ₹{rate})
+💵 USDT: {usdt:.2f}
+💰 INR : ₹{inr:,.0f}
+➡ Diff : {diff:.2f} U
+
+"""
+
+    text += f"━━━━━━━━━━━━━━\nNet Pending: {total:.2f} U"
+
+    await update.message.reply_text(text)
 
 # ================= TRANSACTION ================= #
 
@@ -161,39 +241,36 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_conn()
     cur = conn.cursor()
 
-    if currency == "u":
-        cur.execute("INSERT INTO ledger VALUES (DEFAULT,%s,%s,'USDT',%s,DEFAULT)", (chat_id, user, amount))
-        msg = f"{'➖' if amount<0 else '✅'} 💵 {abs(amount):.2f} U {'deducted' if amount<0 else 'added'}"
-
-    else:
-        cur.execute("INSERT INTO ledger VALUES (DEFAULT,%s,%s,'INR',%s,DEFAULT)", (chat_id, user, amount))
-        msg = f"{'➖' if amount<0 else '✅'} 💰 ₹{abs(amount):,.0f} {'deducted' if amount<0 else 'added'}"
+    cur.execute(
+        "INSERT INTO ledger (chat_id,user_name,currency,amount,rate) VALUES (%s,%s,%s,%s,%s)",
+        (chat_id, user, currency.upper(), amount, RATE)
+    )
 
     conn.commit()
     conn.close()
 
-    await update.message.reply_text(msg)
-    await summary(update, context)
+    await update.message.reply_text(
+        f"{'➖' if amount<0 else '✅'} {currency.upper()} {abs(amount)} @ ₹{RATE}"
+    )
 
 # ================= MAIN ================= #
 
 def main():
-    if not BOT_TOKEN or not DATABASE_URL:
-        raise Exception("Missing ENV variables")
-
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("rate", set_rate))
     app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("ledger", ledger))
     app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("rate", set_rate))
+    app.add_handler(CommandHandler("admin", admin_panel))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
 
-    print("🚀 PAYUTECH BOT RUNNING")
+    print("🚀 PAYUTECH BOT (PRO VERSION) RUNNING")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
