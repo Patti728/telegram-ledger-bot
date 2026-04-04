@@ -5,7 +5,7 @@ import traceback
 from datetime import datetime, timezone, timedelta
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 # ================= CONFIG ================= #
 
@@ -287,29 +287,12 @@ def build_total_text(chat_id, rate):
     t += f"  Status : {status}"
     return t
 
-# ================= SINGLE MESSAGE HANDLER ================= #
+# ================= COMMAND HANDLERS ================= #
 
-async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    ONE handler for EVERYTHING.
-    No CommandHandlers — all routing done here.
-    """
-    try:
-        if update.message is None or update.message.text is None:
-            return
-
-        text = update.message.text.strip()
-        chat_id = str(update.message.chat.id)
-
-        print(f"[MSG] chat={chat_id} user={update.message.from_user.first_name} text={text[:50]}")
-
-        # ── COMMAND ROUTING ──
-        # Strip @botname from commands like /ledger@payutech_bot
-        cmd = text.lower().split("@")[0].split()[0] if text.startswith("/") else None
-
-        if cmd == "/start":
-            if update.message.chat.type == "private":
-                await update.message.reply_text(
+async def do_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /start from {update.message.from_user.first_name}")
+    if update.message.chat.type == "private":
+        await update.message.reply_text(
 f"""✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
        ⚡  {BOT_NAME}  ⚡
 ✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
@@ -332,100 +315,114 @@ f"""✦━━━━━━━━━━━━━━━━━━━━━━━━�
   -50000   ➜  ﹣₹50,000 🔻
 
 ✦━━━━━━━━━━━━━━━━━━━━━━━━━✦""")
-            else:
-                await update.message.reply_text(f"⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘\n\n💱 /rate 95\n📒 /ledger\n📊 /balance")
-            return
+    else:
+        await update.message.reply_text(f"⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘\n\n💱 /rate 95\n📒 /ledger\n📊 /balance")
 
-        elif cmd == "/ledger":
-            rate = get_rate(chat_id)
-            await update.message.reply_text(build_ledger_text(chat_id, rate))
-            return
+async def do_ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /ledger from {update.message.from_user.first_name}")
+    chat_id = str(update.message.chat.id)
+    rate = get_rate(chat_id)
+    await update.message.reply_text(build_ledger_text(chat_id, rate))
 
-        elif cmd == "/balance" or cmd == "/accounts":
-            rate = get_rate(chat_id)
-            await update.message.reply_text(build_balance_text(chat_id, rate))
-            return
+async def do_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /balance from {update.message.from_user.first_name}")
+    chat_id = str(update.message.chat.id)
+    rate = get_rate(chat_id)
+    await update.message.reply_text(build_balance_text(chat_id, rate))
 
-        elif cmd == "/entries":
-            await update.message.reply_text(build_entries_text(chat_id))
-            return
+async def do_entries(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /entries from {update.message.from_user.first_name}")
+    chat_id = str(update.message.chat.id)
+    await update.message.reply_text(build_entries_text(chat_id))
 
-        elif cmd == "/total":
-            rate = get_rate(chat_id)
-            await update.message.reply_text(build_total_text(chat_id, rate))
-            return
+async def do_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /total from {update.message.from_user.first_name}")
+    chat_id = str(update.message.chat.id)
+    rate = get_rate(chat_id)
+    await update.message.reply_text(build_total_text(chat_id, rate))
 
-        elif cmd == "/rate":
-            if not await is_admin(update, context):
-                await update.message.reply_text("🔒 Admin only")
-                return
-            parts = text.split()
-            if len(parts) < 2:
-                current = get_rate(chat_id)
-                await update.message.reply_text(f"💱 Current Rate : ₹{current}\n\nUsage ➜ /rate 95")
-                return
-            try:
-                new_rate = float(parts[1])
-                if new_rate <= 0:
-                    raise ValueError
-                old_rate = set_rate_db(chat_id, new_rate)
-                if old_rate != new_rate:
-                    await update.message.reply_text(f"✅ 𝗥𝗮𝘁𝗲 𝗨𝗽𝗱𝗮𝘁𝗲𝗱\n\n   ₹{old_rate}  ➜  ₹{new_rate}")
-                else:
-                    await update.message.reply_text(f"💱 Rate is already ₹{new_rate}")
-            except (ValueError, IndexError):
-                await update.message.reply_text("❌ Invalid. Usage ➜ /rate 95")
-            return
+async def do_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /rate from {update.message.from_user.first_name}")
+    if not await is_admin(update, context):
+        await update.message.reply_text("🔒 Admin only")
+        return
+    chat_id = str(update.message.chat.id)
+    parts = update.message.text.split()
+    if len(parts) < 2:
+        current = get_rate(chat_id)
+        await update.message.reply_text(f"💱 Current Rate : ₹{current}\n\nUsage ➜ /rate 95")
+        return
+    try:
+        new_rate = float(parts[1])
+        if new_rate <= 0:
+            raise ValueError
+        old_rate = set_rate_db(chat_id, new_rate)
+        if old_rate != new_rate:
+            await update.message.reply_text(f"✅ 𝗥𝗮𝘁𝗲 𝗨𝗽𝗱𝗮𝘁𝗲𝗱\n\n   ₹{old_rate}  ➜  ₹{new_rate}")
+        else:
+            await update.message.reply_text(f"💱 Rate is already ₹{new_rate}")
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Invalid. Usage ➜ /rate 95")
 
-        elif cmd == "/clear":
-            if not await is_admin(update, context):
-                await update.message.reply_text("🔒 Admin only")
-                return
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
-            cur.execute("DELETE FROM carried_pending WHERE chat_id=%s", (chat_id,))
-            conn.commit()
-            conn.close()
-            await update.message.reply_text("🗑 𝗟𝗲𝗱𝗴𝗲𝗿 𝗖𝗹𝗲𝗮𝗿𝗲𝗱")
-            return
+async def do_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /clear from {update.message.from_user.first_name}")
+    if not await is_admin(update, context):
+        await update.message.reply_text("🔒 Admin only")
+        return
+    chat_id = str(update.message.chat.id)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
+    cur.execute("DELETE FROM carried_pending WHERE chat_id=%s", (chat_id,))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🗑 𝗟𝗲𝗱𝗴𝗲𝗿 𝗖𝗹𝗲𝗮𝗿𝗲𝗱")
 
-        elif cmd == "/undo":
-            if not await is_admin(update, context):
-                await update.message.reply_text("🔒 Admin only")
-                return
-            conn = get_conn()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT id, currency, amount, user_name FROM ledger
-                WHERE chat_id=%s ORDER BY id DESC LIMIT 1
-            """, (chat_id,))
-            row = cur.fetchone()
-            if not row:
-                conn.close()
-                await update.message.reply_text("📭 Nothing to undo")
-                return
-            entry_id, currency, amount, user_name = row
-            cur.execute("DELETE FROM ledger WHERE id=%s", (entry_id,))
-            conn.commit()
-            conn.close()
-            if currency == "USDT":
-                await update.message.reply_text(f"↩️ Removed  💵 {amount:.2f} U  ·  {user_name}")
-            else:
-                await update.message.reply_text(f"↩️ Removed  💰 ₹{abs(amount):,.0f}  ·  {user_name}")
-            return
+async def do_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[CMD] /undo from {update.message.from_user.first_name}")
+    if not await is_admin(update, context):
+        await update.message.reply_text("🔒 Admin only")
+        return
+    chat_id = str(update.message.chat.id)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, currency, amount, user_name FROM ledger
+        WHERE chat_id=%s ORDER BY id DESC LIMIT 1
+    """, (chat_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        await update.message.reply_text("📭 Nothing to undo")
+        return
+    entry_id, currency, amount, user_name = row
+    cur.execute("DELETE FROM ledger WHERE id=%s", (entry_id,))
+    conn.commit()
+    conn.close()
+    if currency == "USDT":
+        await update.message.reply_text(f"↩️ Removed  💵 {amount:.2f} U  ·  {user_name}")
+    else:
+        await update.message.reply_text(f"↩️ Removed  💰 ₹{abs(amount):,.0f}  ·  {user_name}")
 
-        elif cmd is not None:
-            # Unknown command — ignore
-            return
+# ================= TRANSACTION HANDLER ================= #
 
-        # ── TRANSACTION HANDLING ──
+async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if update.message is None or update.message.text is None:
+            return
         if update.message.chat.type == "private":
             return
         if not await is_admin(update, context):
             return
 
+        text = update.message.text.strip()
+
+        # Skip if it looks like a command
+        if text.startswith("/"):
+            return
+
         user = get_user_display(update)
+        chat_id = str(update.message.chat.id)
         rate = get_rate(chat_id)
 
         sign = -1 if text.startswith("-") else 1
@@ -469,7 +466,7 @@ f"""✦━━━━━━━━━━━━━━━━━━━━━━━━�
                 await update.message.reply_text(f"🔻  💰  ﹣ ₹{abs(amount):,.0f}  deducted")
 
     except Exception as e:
-        print(f"[ERROR] {e}")
+        print(f"[TX ERROR] {e}")
         traceback.print_exc()
 
 # ================= MAIN ================= #
@@ -478,8 +475,19 @@ def main():
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # ONE handler. No CommandHandlers. Catches everything.
-    app.add_handler(MessageHandler(filters.TEXT, handle_all))
+    # CommandHandlers FIRST (group=0, default)
+    app.add_handler(CommandHandler("start", do_start))
+    app.add_handler(CommandHandler("ledger", do_ledger))
+    app.add_handler(CommandHandler("balance", do_balance))
+    app.add_handler(CommandHandler("entries", do_entries))
+    app.add_handler(CommandHandler("total", do_total))
+    app.add_handler(CommandHandler("accounts", do_balance))
+    app.add_handler(CommandHandler("rate", do_rate))
+    app.add_handler(CommandHandler("clear", do_clear))
+    app.add_handler(CommandHandler("undo", do_undo))
+
+    # Transaction handler — catches non-command text (group=1, runs after commands)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx), group=1)
 
     print(f"⚡ {BOT_NAME} BOT RUNNING")
     app.run_polling(drop_pending_updates=True)
