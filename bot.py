@@ -17,8 +17,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-OWNER_ID = 123456789  # 🔥 CHANGE THIS (your telegram id)
-
+OWNER_ID = 123456789  # change this
 RATE = 100
 
 # ================= DB ================= #
@@ -83,7 +82,7 @@ def calculate_pending(chat_id):
 
     return total
 
-# ================= OWNER PANEL ================= #
+# ================= OWNER ================= #
 
 def get_owner_stats():
     conn = get_conn()
@@ -108,10 +107,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usdt, inr = get_owner_stats()
 
     await update.message.reply_text(f"""
-📊 OWNER DASHBOARD
+📊 OWNER PANEL
 
-💵 Total USDT Traded : {usdt:.2f} U
-💰 Total INR Volume  : ₹{inr:,.0f}
+💵 USDT: {usdt:.2f}
+💰 INR : ₹{inr:,.0f}
 """)
 
 # ================= COMMANDS ================= #
@@ -121,7 +120,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not await is_admin(update, context):
         return
-
     await update.message.reply_text("🚀 PAYUTECH BOT ACTIVE")
 
 async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,7 +132,7 @@ async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         RATE = float(context.args[0])
         await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
     except:
-        await update.message.reply_text("❌ Usage: /rate 95")
+        await update.message.reply_text("❌ Use: /rate 98")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -148,9 +146,8 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"""
 📊 PAYUTECH SUMMARY | 📅 {datetime.now().strftime("%d %b %Y")}
 
-💼 Net Pending : {pending:.2f} U
-
-Status : {status}
+💼 Pending: {pending:.2f} U
+Status: {status}
 """)
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,9 +165,7 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    await update.message.reply_text("🗑 Ledger Cleared")
-
-# ================= LEDGER ================= #
+    await update.message.reply_text("🗑 Cleared")
 
 async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -194,25 +189,23 @@ async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = cur.fetchall()
     conn.close()
 
-    text = "📒 PAYUTECH DAILY LEDGER\n\n"
+    text = "📒 PAYUTECH LEDGER\n\n"
     total = 0
 
     for i, (rate, usdt, inr) in enumerate(rows, 1):
         usdt = usdt or 0
         inr = inr or 0
-
         diff = (inr / rate) - usdt
         total += diff
 
-        text += f"""Day {i} (Rate ₹{rate})
-💵 USDT: {usdt:.2f}
-💰 INR : ₹{inr:,.0f}
-➡ Diff : {diff:.2f} U
+        text += f"""Day {i} (₹{rate})
+USDT: {usdt:.2f}
+INR : ₹{inr:,.0f}
+Diff: {diff:.2f} U
 
 """
 
-    text += f"━━━━━━━━━━━━━━\nNet Pending: {total:.2f} U"
-
+    text += f"━━━━━━━━━━━━\nPending: {total:.2f} U"
     await update.message.reply_text(text)
 
 # ================= TRANSACTION ================= #
@@ -227,30 +220,37 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user.username or update.message.from_user.first_name
     chat_id = str(update.message.chat.id)
 
-    match = re.match(r"([+-]?)([\d,\.]+)\s*(u|inr)?$", text)
-    if not match:
+    # sign
+    sign = -1 if text.startswith("-") else 1
+
+    # amount
+    amount_match = re.findall(r"[\d,\.]+", text)
+    if not amount_match:
         return
 
-    sign = match.group(1)
-    amount = float(match.group(2).replace(",", ""))
-    currency = match.group(3) or "inr"
+    amount = float(amount_match[0].replace(",", "")) * sign
 
-    if sign == "-":
-        amount = -amount
+    # currency
+    if "u" in text:
+        currency = "USDT"
+    elif "inr" in text:
+        currency = "INR"
+    else:
+        currency = "INR"
 
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute(
         "INSERT INTO ledger (chat_id,user_name,currency,amount,rate) VALUES (%s,%s,%s,%s,%s)",
-        (chat_id, user, currency.upper(), amount, RATE)
+        (chat_id, user, currency, amount, RATE)
     )
 
     conn.commit()
     conn.close()
 
     await update.message.reply_text(
-        f"{'➖' if amount<0 else '✅'} {currency.upper()} {abs(amount)} @ ₹{RATE}"
+        f"{'➖' if amount<0 else '✅'} {currency} {abs(amount)} @ ₹{RATE}"
     )
 
 # ================= MAIN ================= #
@@ -270,7 +270,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
 
-    print("🚀 PAYUTECH BOT (PRO VERSION) RUNNING")
+    print("🚀 PAYUTECH BOT RUNNING")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
