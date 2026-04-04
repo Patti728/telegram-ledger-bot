@@ -13,9 +13,11 @@ from telegram.ext import (
 
 # ================= CONFIG ================= #
 
-TOKEN = os.getenv("8646101570:AAGLhe9jMnBbZo_3U1SmuTOrKl0T78ebpJA")
-DATABASE_URL = os.getenv("postgresql://postgres:cFYGCNhajBBfGVjIQjMmrbJhzEebvHus@postgres.railway.internal:5432/railway")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 RATE = 100
+
+print("DB URL:", DATABASE_URL)
 
 # ================= DB ================= #
 
@@ -40,7 +42,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ================= ADMIN ================= #
+# ================= ADMIN CHECK ================= #
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -92,7 +94,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return
 
-    await update.message.reply_text("🚀 PAYUTECH BOT Active")
+    await update.message.reply_text("🚀 PAYUTECH BOT ACTIVE")
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -137,18 +139,22 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if "u" in text:
             amount = clean_amount(text)
+
             cur.execute(
                 "INSERT INTO ledger (chat_id,user_name,currency,amount) VALUES (%s,%s,'USDT',%s)",
                 (chat_id, user, amount)
             )
+
             msg = f"✅ 💵 {amount:.2f} U added"
 
         elif "inr" in text:
             amount = clean_amount(text)
+
             cur.execute(
                 "INSERT INTO ledger (chat_id,user_name,currency,amount) VALUES (%s,%s,'INR',%s)",
                 (chat_id, user, amount)
             )
+
             msg = f"✅ 💰 ₹{amount:,.0f} added"
 
         else:
@@ -168,14 +174,26 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= MAIN ================= #
 
-init_db()
+def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN not set")
 
-app = ApplicationBuilder().token(TOKEN).build()
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL not set")
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("summary", summary))
-app.add_handler(MessageHandler(filters.TEXT, handle_tx))
+    init_db()
 
-print("🚀 PAYUTECH BOT Running Stable...")
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-app.run_polling(drop_pending_updates=True)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("summary", summary))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
+
+    print("🚀 PAYUTECH BOT Running Stable...")
+
+    app.run_polling(drop_pending_updates=True)
+
+# ================= RUN ================= #
+
+if __name__ == "__main__":
+    main()
