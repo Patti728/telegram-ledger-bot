@@ -12,7 +12,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 BOT_NAME = os.getenv("BOT_NAME", "PAYUTECH")
 
-# IST (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 def now_ist():
     return datetime.now(IST)
@@ -69,23 +68,10 @@ def get_rate(chat_id):
     return row[0] if row else 100.0
 
 def calculate_current_pending_usdt(cur, chat_id):
-    """
-    pending_usdt = total_usdt - (sum of INR/rate for each INR entry)
-    positive = USDT still owed (need more INR)
-    negative = overpaid
-    """
     cur.execute("SELECT currency, amount, rate FROM ledger WHERE chat_id=%s ORDER BY id", (chat_id,))
     rows = cur.fetchall()
-
-    total_usdt = 0.0
-    inr_as_usdt = 0.0
-
-    for currency, amount, rate in rows:
-        if currency == "USDT":
-            total_usdt += amount
-        else:
-            inr_as_usdt += (amount / rate)
-
+    total_usdt = sum(a for c, a, r in rows if c == "USDT")
+    inr_as_usdt = sum(a / r for c, a, r in rows if c == "INR")
     return total_usdt - inr_as_usdt
 
 def set_rate_db(chat_id, new_rate):
@@ -98,13 +84,11 @@ def set_rate_db(chat_id, new_rate):
 
     if old_rate != new_rate:
         pending_usdt = calculate_current_pending_usdt(cur, chat_id)
-
         if abs(pending_usdt) > 0.001:
             cur.execute("""
                 INSERT INTO carried_pending (chat_id, pending_usdt, from_rate)
                 VALUES (%s, %s, %s)
             """, (chat_id, pending_usdt, old_rate))
-
         cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
 
     cur.execute("""
@@ -117,7 +101,6 @@ def set_rate_db(chat_id, new_rate):
     return old_rate
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check if user is admin. Returns True for private chats."""
     try:
         if update.message.chat.type == "private":
             return True
@@ -127,7 +110,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return member.status in ["administrator", "creator"]
     except Exception as e:
-        print(f"Admin check failed: {e}")
+        print(f"[ADMIN CHECK ERROR] {e}")
         return False
 
 def get_user_display(update: Update):
@@ -154,7 +137,6 @@ def get_full_summary(chat_id, rate):
 
     total_usdt = sum(a for c, a, r in rows if c == "USDT")
     total_inr = sum(a for c, a, r in rows if c == "INR")
-
     inr_as_usdt = sum(a / r for c, a, r in rows if c == "INR")
     current_pending_usdt = total_usdt - inr_as_usdt
 
@@ -181,17 +163,20 @@ def get_full_summary(chat_id, rate):
         "rate": rate,
     }
 
-# ================= FORMAT HELPERS ================= #
+# ================= FORMAT ================= #
 
 def format_status(gp_usdt):
     if gp_usdt > 0.001:
-        return "🔴 Pending", gp_usdt, gp_usdt
+        return "🔴 Pending", gp_usdt
     elif gp_usdt < -0.001:
-        return "🟡 Overpaid", abs(gp_usdt), abs(gp_usdt)
+        return "🟡 Overpaid", abs(gp_usdt)
     else:
-        return "🟢 Settled", 0, 0
+        return "🟢 Settled", 0
 
-def build_ledger_text(s, rate, today):
+def build_ledger_text(chat_id, rate):
+    s = get_full_summary(chat_id, rate)
+    today = now_ist().strftime('%d %b %Y')
+
     usdt_entries = [(u, a, r) for u, c, a, r in s["ledger_rows"] if c == "USDT"]
     inr_entries = [(u, a, r) for u, c, a, r in s["ledger_rows"] if c == "INR"]
 
@@ -201,7 +186,6 @@ def build_ledger_text(s, rate, today):
     t += f"      🗓  {today}\n"
     t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
 
-    # CARRIED FORWARD
     if s["carried_entries"]:
         t += f"\n  📌  𝗖𝗔𝗥𝗥𝗜𝗘𝗗 𝗙𝗢𝗥𝗪𝗔𝗥𝗗\n\n"
         for i, (usdt_p, from_r) in enumerate(s["carried_entries"], 1):
@@ -213,7 +197,6 @@ def build_ledger_text(s, rate, today):
                 t += f"        ↳ from ₹{from_r}\n"
         t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
-    # USDT
     if usdt_entries:
         t += f"\n  💵  𝗨𝗦𝗗𝗧\n\n"
         for i, (user, amount, _) in enumerate(usdt_entries, 1):
@@ -223,7 +206,6 @@ def build_ledger_text(s, rate, today):
                 t += f"   {i}.  ﹣ {abs(amount):,.2f} U  →  {user}\n"
         t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
-    # INR
     if inr_entries:
         t += f"\n  💰  𝗜𝗡𝗥\n\n"
         for i, (user, amount, _) in enumerate(inr_entries, 1):
@@ -237,8 +219,7 @@ def build_ledger_text(s, rate, today):
         t += f"\n  📭 No entries yet\n"
         t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
-    # SUMMARY
-    status, display_usdt, _ = format_status(s["grand_pending_usdt"])
+    status, display_usdt = format_status(s["grand_pending_usdt"])
     display_inr = display_usdt * rate
 
     t += f"\n  📈  𝗦𝗨𝗠𝗠𝗔𝗥𝗬\n\n"
@@ -254,11 +235,13 @@ def build_ledger_text(s, rate, today):
     t += f"\n✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
     t += f"      ⚡ {BOT_NAME} Ledger\n"
     t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
-
     return t
 
-def build_balance_text(s, rate, today):
-    status, display_usdt, _ = format_status(s["grand_pending_usdt"])
+def build_balance_text(chat_id, rate):
+    s = get_full_summary(chat_id, rate)
+    today = now_ist().strftime('%d %b %Y')
+
+    status, display_usdt = format_status(s["grand_pending_usdt"])
     display_inr = display_usdt * rate
 
     t = ""
@@ -278,11 +261,9 @@ def build_balance_text(s, rate, today):
     t += f"\n✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
     t += f"      ⚡ {BOT_NAME} Ledger\n"
     t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
-
     return t
 
 def build_entries_text(chat_id):
-    """Show raw entries list (all entries with timestamps)."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -293,7 +274,6 @@ def build_entries_text(chat_id):
     conn.close()
 
     today = now_ist().strftime('%d %b %Y')
-
     if not rows:
         return f"📭 No entries yet"
 
@@ -304,27 +284,21 @@ def build_entries_text(chat_id):
 
     for i, (user, currency, amount, rate, created) in enumerate(rows, 1):
         if currency == "USDT":
-            if amount >= 0:
-                t += f"  {i}. ✅ 💵 ＋{amount:,.2f} U @ ₹{rate}\n"
-            else:
-                t += f"  {i}. 🔻 💵 ﹣{abs(amount):,.2f} U @ ₹{rate}\n"
+            sym = "＋" if amount >= 0 else "﹣"
+            t += f"  {i}. {sym} 💵 {abs(amount):,.2f} U @ ₹{rate}\n"
         else:
-            if amount >= 0:
-                t += f"  {i}. ✅ 💰 ＋₹{amount:,.0f}\n"
-            else:
-                t += f"  {i}. 🔻 💰 ﹣₹{abs(amount):,.0f}\n"
+            sym = "＋" if amount >= 0 else "﹣"
+            t += f"  {i}. {sym} 💰 ₹{abs(amount):,.0f}\n"
         t += f"      {user}  ·  {created.strftime('%d %b %H:%M')}\n\n"
 
     t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
     t += f"      ⚡ {BOT_NAME} Ledger\n"
     t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
-
     return t
 
 def build_total_text(chat_id, rate):
-    """Quick total — just USDT total, INR total, and pending."""
     s = get_full_summary(chat_id, rate)
-    status, display_usdt, _ = format_status(s["grand_pending_usdt"])
+    status, display_usdt = format_status(s["grand_pending_usdt"])
     display_inr = display_usdt * rate
 
     t = f"📊 {BOT_NAME} TOTAL\n\n"
@@ -333,25 +307,23 @@ def build_total_text(chat_id, rate):
     t += f"  💱 Rate   :  ₹{rate}\n\n"
     t += f"  🔄 Pending :  {display_usdt:,.2f} U  ≈  ₹{display_inr:,.0f}\n"
     t += f"  Status : {status}"
-
     return t
 
-# ================= COMMANDS ================= #
+# ================= COMMAND HANDLERS ================= #
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type == "private":
         await update.message.reply_text(
 f"""
 ✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
        ⚡  {BOT_NAME}  ⚡
-        FINTECH  LEDGER
 ✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
 
   📋  𝗖𝗢𝗠𝗠𝗔𝗡𝗗𝗦
 
   /rate ‹amt›    ─  💱 Set rate
   /ledger          ─  📒 Full ledger
-  /balance        ─  📊 Quick balance
+  /balance        ─  📊 Balance
   /entries         ─  📝 All entries
   /total             ─  📊 Quick total
   /undo            ─  ↩️ Remove last
@@ -364,26 +336,12 @@ f"""
   -2000u   ➜  ﹣2000 USDT 🔻
   -50000   ➜  ﹣₹50,000 🔻
 
-✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
-  👉 Add me to a group
-  👉 Make me admin
-  👉 Type /start to activate
 ✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"""
         )
         return
+    await update.message.reply_text(f"⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘\n\n💱 /rate 95\n📒 /ledger\n📊 /balance")
 
-    # In group — anyone can trigger start
-    await update.message.reply_text(
-f"""⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘
-
-💱 Set rate ➜ /rate 95
-📒 View ledger ➜ /ledger
-📊 Quick balance ➜ /balance"""
-    )
-
-# ── RATE (admin only) ──
-
-async def rate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("🔒 Admin only")
         return
@@ -399,76 +357,50 @@ async def rate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if new_rate <= 0:
             raise ValueError
         old_rate = set_rate_db(chat_id, new_rate)
-
         if old_rate != new_rate:
             await update.message.reply_text(f"✅ 𝗥𝗮𝘁𝗲 𝗨𝗽𝗱𝗮𝘁𝗲𝗱\n\n   ₹{old_rate}  ➜  ₹{new_rate}")
         else:
             await update.message.reply_text(f"💱 Rate is already ₹{new_rate}")
-
     except (ValueError, IndexError):
         await update.message.reply_text("❌ Invalid. Usage ➜ /rate 95")
 
-# ── LEDGER (anyone can view) ──
-
-async def ledger_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
-    s = get_full_summary(chat_id, rate)
-    today = now_ist().strftime('%d %b %Y')
-    await update.message.reply_text(build_ledger_text(s, rate, today))
+    await update.message.reply_text(build_ledger_text(chat_id, rate))
 
-# ── BALANCE (anyone can view) ──
-
-async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
-    s = get_full_summary(chat_id, rate)
-    today = now_ist().strftime('%d %b %Y')
-    await update.message.reply_text(build_balance_text(s, rate, today))
+    await update.message.reply_text(build_balance_text(chat_id, rate))
 
-# ── ENTRIES (anyone can view) ──
-
-async def entries_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_entries(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat.id)
     await update.message.reply_text(build_entries_text(chat_id))
 
-# ── TOTAL (anyone can view) ──
-
-async def total_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
     await update.message.reply_text(build_total_text(chat_id, rate))
 
-# ── ACCOUNTS (alias for balance) ──
-
-async def accounts_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await balance_cmd(update, context)
-
-# ── CLEAR (admin only) ──
-
-async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("🔒 Admin only")
         return
     chat_id = str(update.message.chat.id)
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
     cur.execute("DELETE FROM carried_pending WHERE chat_id=%s", (chat_id,))
     conn.commit()
     conn.close()
+    await update.message.reply_text("🗑 𝗟𝗲𝗱𝗴𝗲𝗿 𝗖𝗹𝗲𝗮𝗿𝗲𝗱")
 
-    await update.message.reply_text("🗑 𝗟𝗲𝗱𝗴𝗲𝗿 𝗖𝗹𝗲𝗮𝗿𝗲𝗱\n\nAll entries removed.")
-
-# ── UNDO (admin only) ──
-
-async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         await update.message.reply_text("🔒 Admin only")
         return
     chat_id = str(update.message.chat.id)
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -476,41 +408,84 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         WHERE chat_id=%s ORDER BY id DESC LIMIT 1
     """, (chat_id,))
     row = cur.fetchone()
-
     if not row:
         conn.close()
         await update.message.reply_text("📭 Nothing to undo")
         return
-
     entry_id, currency, amount, user_name = row
     cur.execute("DELETE FROM ledger WHERE id=%s", (entry_id,))
     conn.commit()
     conn.close()
-
     if currency == "USDT":
         await update.message.reply_text(f"↩️ Removed  💵 {amount:.2f} U  ·  {user_name}")
     else:
         await update.message.reply_text(f"↩️ Removed  💰 ₹{abs(amount):,.0f}  ·  {user_name}")
 
-# ================= TRANSACTION HANDLER (admin only) ================= #
+# ================= TEXT HANDLER (entries + fallback commands) ================= #
 
-async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles ALL text messages:
+    1. If it looks like a command (/ledger, /balance etc) → run command
+    2. If it looks like a transaction (+5000u, -89000) → add entry
+    3. Otherwise → ignore
+    """
+    if update.message is None or update.message.text is None:
         return
+
+    text = update.message.text.strip()
+    chat_id = str(update.message.chat.id)
+
+    # ── FALLBACK COMMAND HANDLING ──
+    # This catches commands that CommandHandler might miss in groups
+    text_lower = text.lower().split("@")[0]  # Remove @botname suffix
+
+    if text_lower == "/ledger":
+        await cmd_ledger(update, context)
+        return
+    elif text_lower == "/balance":
+        await cmd_balance(update, context)
+        return
+    elif text_lower == "/entries":
+        await cmd_entries(update, context)
+        return
+    elif text_lower == "/total":
+        await cmd_total(update, context)
+        return
+    elif text_lower == "/accounts":
+        await cmd_balance(update, context)
+        return
+    elif text_lower == "/clear":
+        await cmd_clear(update, context)
+        return
+    elif text_lower == "/undo":
+        await cmd_undo(update, context)
+        return
+    elif text_lower.startswith("/rate"):
+        # Extract rate value from text
+        parts = text.split()
+        if len(parts) > 1:
+            context.args = parts[1:]
+        else:
+            context.args = []
+        await cmd_rate(update, context)
+        return
+    elif text_lower.startswith("/"):
+        # Unknown command — ignore
+        return
+
+    # ── TRANSACTION HANDLING (admin only) ──
     if update.message.chat.type == "private":
         return
     if not await is_admin(update, context):
         return
 
-    text = update.message.text.strip()
     user = get_user_display(update)
-    chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
 
     is_negative = text.startswith("-")
     sign = -1 if is_negative else 1
 
-    # Extract number
     match = re.findall(r"[\d,\.]+", text)
     if not match:
         return
@@ -523,15 +498,9 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if amount == 0:
         return
 
-    # Detect currency — "u" in text → USDT, else INR
-    # But ignore "inr" containing "u" — wait, "inr" doesn't contain "u"
-    # Also ignore common words that have "u" — check specifically for "u" as currency marker
-    text_clean = text.lower().strip()
-    
-    # Remove the number part to check remaining text
-    remaining = re.sub(r"[\d,\.\+\-\s]", "", text_clean)
-    
-    # Check if it's USDT
+    # Currency detection — check remaining text after removing numbers/symbols
+    remaining = re.sub(r"[\d,\.\+\-\s]", "", text.lower())
+
     if remaining in ["u", "usdt", "usd"] or remaining.endswith("u") or remaining.startswith("u"):
         currency = "USDT"
     else:
@@ -546,7 +515,6 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    # Confirmation
     if currency == "USDT":
         if amount > 0:
             await update.message.reply_text(f"✅  💵  ＋ {amount:,.2f} U  added @ ₹{rate}")
@@ -565,24 +533,26 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # All commands — register both lowercase and uppercase
+    # Command handlers (primary)
     commands = {
-        "start": start,
-        "rate": rate_cmd,
-        "ledger": ledger_cmd,
-        "balance": balance_cmd,
-        "entries": entries_cmd,
-        "total": total_cmd,
-        "accounts": accounts_cmd,
-        "clear": clear_cmd,
-        "undo": undo_cmd,
+        "start": cmd_start,
+        "rate": cmd_rate,
+        "ledger": cmd_ledger,
+        "balance": cmd_balance,
+        "entries": cmd_entries,
+        "total": cmd_total,
+        "accounts": cmd_balance,
+        "clear": cmd_clear,
+        "undo": cmd_undo,
     }
 
     for cmd, handler in commands.items():
         app.add_handler(CommandHandler(cmd, handler))
-        app.add_handler(CommandHandler(cmd.upper(), handler))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
+    # Text handler — catches EVERYTHING (transactions + fallback commands)
+    # This is the key fix: if CommandHandler misses a command in a group,
+    # this MessageHandler will catch it as text and route it properly
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     print(f"⚡ {BOT_NAME} BOT RUNNING")
     app.run_polling(drop_pending_updates=True)
