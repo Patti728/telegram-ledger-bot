@@ -10,11 +10,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-BOT_NAME = os.getenv("BOT_NAME", "LYNPIK PAY")
+BOT_NAME = os.getenv("BOT_NAME", "PAYUTECH")
 
-# IST Timezone (UTC+5:30)
+# IST (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
-
 def now_ist():
     return datetime.now(IST)
 
@@ -27,7 +26,6 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Main ledger — each entry stores the rate it was entered at
     cur.execute("""
     CREATE TABLE IF NOT EXISTS ledger (
         id SERIAL PRIMARY KEY,
@@ -40,7 +38,6 @@ def init_db():
     )
     """)
 
-    # Per-group rate
     cur.execute("""
     CREATE TABLE IF NOT EXISTS group_settings (
         chat_id TEXT PRIMARY KEY,
@@ -48,15 +45,16 @@ def init_db():
     )
     """)
 
-    # ── SPLIT LOGIC TABLE ──
-    # When rate changes, current pending is frozen and stored here
+    # ── SPLIT LOGIC ──
+    # Stores USDT pending when rate changes
+    # positive = USDT is owed (someone needs to pay INR)
+    # negative = USDT was overpaid (someone paid extra INR)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS carried_pending (
         id SERIAL PRIMARY KEY,
         chat_id TEXT NOT NULL,
-        pending_inr FLOAT NOT NULL DEFAULT 0,
-        old_rate FLOAT NOT NULL,
-        new_rate FLOAT NOT NULL,
+        pending_usdt FLOAT NOT NULL DEFAULT 0,
+        from_rate FLOAT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
@@ -74,48 +72,67 @@ def get_rate(chat_id):
     conn.close()
     return row[0] if row else 100.0
 
+def calculate_current_pending_usdt(cur, chat_id):
+    """
+    From current ledger entries, calculate net USDT pending.
+    
+    Logic:
+      total USDT received → this much USDT needs to be paid for in INR
+      total INR paid → convert to USDT at each entry's own rate
+      pending_usdt = total_usdt - (sum of INR/rate for each INR entry)
+    
+    positive = USDT still owed (need more INR)
+    negative = overpaid (paid more INR than USDT value)
+    """
+    cur.execute("""
+        SELECT currency, amount, rate FROM ledger WHERE chat_id=%s ORDER BY id
+    """, (chat_id,))
+    rows = cur.fetchall()
+
+    total_usdt = 0.0
+    inr_as_usdt = 0.0
+
+    for currency, amount, rate in rows:
+        if currency == "USDT":
+            total_usdt += amount
+        else:
+            # Convert INR to USDT at the rate it was entered
+            inr_as_usdt += (amount / rate)
+
+    pending_usdt = total_usdt - inr_as_usdt
+    return pending_usdt, total_usdt, inr_as_usdt
+
 def set_rate_db(chat_id, new_rate):
     """
     SPLIT LOGIC:
-    1. Calculate pending at old rate
-    2. Freeze it into carried_pending table
-    3. Delete old-rate entries (they're now captured)
-    4. Update to new rate
+    1. Calculate current pending as USDT
+    2. Store it in carried_pending
+    3. Clear current ledger entries
+    4. Update rate
     """
     conn = get_conn()
     cur = conn.cursor()
 
-    # Get old rate
     cur.execute("SELECT rate FROM group_settings WHERE chat_id=%s", (chat_id,))
     row = cur.fetchone()
     old_rate = row[0] if row else 100.0
 
+    pending_usdt_snapshot = 0.0
+
     if old_rate != new_rate:
-        # Get all current ledger entries (at any rate still in table)
-        cur.execute("""
-            SELECT currency, amount, rate FROM ledger
-            WHERE chat_id=%s
-        """, (chat_id,))
-        rows = cur.fetchall()
+        pending_usdt, _, _ = calculate_current_pending_usdt(cur, chat_id)
 
-        if rows:
-            # Calculate pending: sum USDT value - sum INR
-            # Each USDT entry uses ITS OWN stored rate
-            usdt_value = sum(a * r for c, a, r in rows if c == "USDT")
-            total_inr = sum(a for c, a, r in rows if c == "INR")
-            diff = usdt_value - total_inr  # positive = INR still owed
+        if abs(pending_usdt) > 0.001:
+            # Store as USDT (not INR!)
+            cur.execute("""
+                INSERT INTO carried_pending (chat_id, pending_usdt, from_rate)
+                VALUES (%s, %s, %s)
+            """, (chat_id, pending_usdt, old_rate))
+            pending_usdt_snapshot = pending_usdt
 
-            if diff != 0:
-                # Freeze this pending amount
-                cur.execute("""
-                    INSERT INTO carried_pending (chat_id, pending_inr, old_rate, new_rate)
-                    VALUES (%s, %s, %s, %s)
-                """, (chat_id, diff, old_rate, new_rate))
+        # Clear current entries — now captured in carried_pending
+        cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
 
-            # Clear ledger entries — they're now captured in carried_pending
-            cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
-
-    # Update rate
     cur.execute("""
         INSERT INTO group_settings (chat_id, rate) VALUES (%s, %s)
         ON CONFLICT (chat_id) DO UPDATE SET rate = EXCLUDED.rate
@@ -123,7 +140,75 @@ def set_rate_db(chat_id, new_rate):
 
     conn.commit()
     conn.close()
-    return old_rate
+    return old_rate, pending_usdt_snapshot
+
+def get_total_carried_usdt(cur, chat_id):
+    """Sum all carried forward USDT pending."""
+    cur.execute("""
+        SELECT COALESCE(SUM(pending_usdt), 0) FROM carried_pending WHERE chat_id=%s
+    """, (chat_id,))
+    return cur.fetchone()[0]
+
+def get_carried_entries(cur, chat_id):
+    """Get individual carried forward entries for display."""
+    cur.execute("""
+        SELECT pending_usdt, from_rate FROM carried_pending
+        WHERE chat_id=%s ORDER BY id
+    """, (chat_id,))
+    return cur.fetchall()
+
+def get_full_summary(chat_id, rate):
+    """
+    Calculate everything needed for balance/ledger display.
+    
+    Total USDT pending = carried_usdt + current_pending_usdt
+    INR equivalent = total_usdt_pending × current_rate
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Carried forward (as USDT)
+    carried_usdt = get_total_carried_usdt(cur, chat_id)
+
+    # Current entries
+    cur.execute("SELECT currency, amount, rate FROM ledger WHERE chat_id=%s", (chat_id,))
+    rows = cur.fetchall()
+
+    total_usdt_in = sum(a for c, a, r in rows if c == "USDT")
+    total_inr_in = sum(a for c, a, r in rows if c == "INR")
+
+    # Current pending in USDT terms
+    inr_as_usdt = sum(a / r for c, a, r in rows if c == "INR")
+    current_pending_usdt = total_usdt_in - inr_as_usdt
+
+    # Grand total
+    grand_pending_usdt = carried_usdt + current_pending_usdt
+    grand_pending_inr = grand_pending_usdt * rate
+
+    # Carried entries for display
+    carried_entries = get_carried_entries(cur, chat_id)
+
+    # All ledger entries for ledger display
+    cur.execute("""
+        SELECT user_name, currency, amount, rate FROM ledger
+        WHERE chat_id=%s ORDER BY id
+    """, (chat_id,))
+    ledger_rows = cur.fetchall()
+
+    conn.close()
+
+    return {
+        "total_usdt": total_usdt_in,
+        "total_inr": total_inr_in,
+        "usdt_value_inr": total_usdt_in * rate,
+        "carried_usdt": carried_usdt,
+        "carried_entries": carried_entries,
+        "current_pending_usdt": current_pending_usdt,
+        "grand_pending_usdt": grand_pending_usdt,
+        "grand_pending_inr": grand_pending_inr,
+        "ledger_rows": ledger_rows,
+        "rate": rate,
+    }
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -139,69 +224,49 @@ def get_user_display(update: Update):
     user = update.message.from_user
     return user.username or user.first_name or "Unknown"
 
-# ================= PENDING CALCULATION ================= #
-
-def calculate_full_pending(chat_id, rate):
-    """
-    Total pending = carried forward (frozen) + current entries pending
-    """
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # 1. All carried-forward pending (stored as INR values, frozen)
-    cur.execute("""
-        SELECT COALESCE(SUM(pending_inr), 0) FROM carried_pending WHERE chat_id=%s
-    """, (chat_id,))
-    carried_inr = cur.fetchone()[0]
-
-    # 2. Current entries
-    cur.execute("SELECT currency, amount FROM ledger WHERE chat_id=%s", (chat_id,))
-    rows = cur.fetchall()
-
-    total_usdt = sum(a for c, a in rows if c == "USDT")
-    total_inr = sum(a for c, a in rows if c == "INR")
-
-    usdt_value = total_usdt * rate
-    current_diff = usdt_value - total_inr
-
-    # 3. Grand total
-    total_pending_inr = carried_inr + current_diff
-
-    conn.close()
-    return total_usdt, total_inr, carried_inr, total_pending_inr
-
 # ================= COMMANDS ================= #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.type == "private":
         await update.message.reply_text(
-f"""⚡ {BOT_NAME} — FINTECH LEDGER
+f"""
+✦ ━━━━━━━━━━━━━━━━━━━━━ ✦
+      ⚡  {BOT_NAME}  ⚡
+       FINTECH  LEDGER
+✦ ━━━━━━━━━━━━━━━━━━━━━ ✦
 
-┌─────────────────────────┐
-│  📋  COMMANDS                        │
-├─────────────────────────┤
-│  /rate ‹amt›      Set rate              │
-│  /ledger            Full ledger           │
-│  /balance          Quick balance       │
-│  /undo              Remove last          │
-│  /clear              Clear all               │
-└─────────────────────────┘
+  📋  𝗖𝗢𝗠𝗠𝗔𝗡𝗗𝗦
 
-┌─────────────────────────┐
-│  💱  ADD ENTRIES                     │
-├─────────────────────────┤
-│  5000u       →  +5000 USDT        │
-│  89000       →  +₹89,000            │
-│  -2000u     →  -2000 USDT          │
-│  -50000     →  -₹50,000             │
-└─────────────────────────┘
+  /rate ‹amt›    ─  💱 Set rate
+  /ledger          ─  📒 Full ledger
+  /balance        ─  📊 Quick balance
+  /undo            ─  ↩️ Remove last
+  /clear            ─  🗑 Clear all
 
-👉 Add me to a group & make me admin"""
+  💱  𝗘𝗡𝗧𝗥𝗜𝗘𝗦
+
+  5000u     ➜  ＋5000 USDT 💵
+  89000     ➜  ＋₹89,000 💰
+  -2000u   ➜  ﹣2000 USDT 🔻
+  -50000   ➜  ﹣₹50,000 🔻
+
+✦ ━━━━━━━━━━━━━━━━━━━━━ ✦
+  👉 Add me to a group
+  👉 Make me admin
+  👉 Type /start to activate
+✦ ━━━━━━━━━━━━━━━━━━━━━ ✦"""
         )
         return
     if not await is_admin(update, context):
         return
-    await update.message.reply_text(f"⚡ {BOT_NAME} ACTIVE\n\n💱 Set rate with /rate 95")
+    await update.message.reply_text(
+f"""⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘
+
+💱 Set rate ➜ /rate 95
+📒 View ledger ➜ /ledger"""
+    )
+
+# ── RATE ──
 
 async def rate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -210,26 +275,26 @@ async def rate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         current = get_rate(chat_id)
-        await update.message.reply_text(f"💱 Current Rate : ₹{current}\n\nUsage → /rate 95")
+        await update.message.reply_text(f"💱 Current Rate : ₹{current}\n\nUsage ➜ /rate 95")
         return
 
     try:
         new_rate = float(context.args[0])
         if new_rate <= 0:
             raise ValueError
-        old_rate = set_rate_db(chat_id, new_rate)
+        old_rate, pending_snapshot = set_rate_db(chat_id, new_rate)
 
         if old_rate != new_rate:
-            await update.message.reply_text(
-                f"✅ Rate updated\n\n"
-                f"   ₹{old_rate}  ➜  ₹{new_rate}\n\n"
-                f"📌 Previous pending locked & carried forward"
-            )
+            msg = f"✅ 𝗥𝗮𝘁𝗲 𝗨𝗽𝗱𝗮𝘁𝗲𝗱\n\n"
+            msg += f"   ₹{old_rate}  ➜  ₹{new_rate}"
+            await update.message.reply_text(msg)
         else:
             await update.message.reply_text(f"💱 Rate is already ₹{new_rate}")
 
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Invalid. Usage → /rate 95")
+        await update.message.reply_text("❌ Invalid. Usage ➜ /rate 95")
+
+# ── CLEAR ──
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -243,7 +308,9 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    await update.message.reply_text("🗑 Ledger cleared\n\nAll entries & carried pending removed")
+    await update.message.reply_text("🗑 𝗟𝗲𝗱𝗴𝗲𝗿 𝗖𝗹𝗲𝗮𝗿𝗲𝗱\n\nAll entries & carried pending removed.")
+
+# ── UNDO ──
 
 async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -269,9 +336,9 @@ async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if currency == "USDT":
-        await update.message.reply_text(f"↩️ Removed {amount:.2f} U by {user_name}")
+        await update.message.reply_text(f"↩️ Removed  💵 {amount:.2f} U  ·  {user_name}")
     else:
-        await update.message.reply_text(f"↩️ Removed ₹{abs(amount):,.0f} by {user_name}")
+        await update.message.reply_text(f"↩️ Removed  💰 ₹{abs(amount):,.0f}  ·  {user_name}")
 
 # ================= LEDGER (PREMIUM UI) ================= #
 
@@ -281,104 +348,86 @@ async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT user_name, currency, amount, rate
-        FROM ledger WHERE chat_id=%s ORDER BY id
-    """, (chat_id,))
-    rows = cur.fetchall()
-
-    cur.execute("""
-        SELECT pending_inr, old_rate FROM carried_pending
-        WHERE chat_id=%s ORDER BY id
-    """, (chat_id,))
-    carried_rows = cur.fetchall()
-    conn.close()
-
+    s = get_full_summary(chat_id, rate)
     today = now_ist().strftime('%d %b %Y')
 
-    usdt_entries = [(u, a, r) for u, c, a, r in rows if c == "USDT"]
-    inr_entries = [(u, a, r) for u, c, a, r in rows if c == "INR"]
+    usdt_entries = [(u, a, r) for u, c, a, r in s["ledger_rows"] if c == "USDT"]
+    inr_entries = [(u, a, r) for u, c, a, r in s["ledger_rows"] if c == "INR"]
 
-    # ── BUILD MESSAGE ──
-
-    text = f"📊 {BOT_NAME} LEDGER\n"
-    text += f"🗓 {today}\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    t = ""
+    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
+    t += f"     📊  {BOT_NAME} LEDGER\n"
+    t += f"     🗓  {today}\n"
+    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
 
     # ── CARRIED FORWARD ──
-    if carried_rows:
-        text += "\n📌 CARRIED FORWARD\n\n"
-        for i, (pending_inr, old_rate) in enumerate(carried_rows, 1):
-            if pending_inr > 0:
-                usdt_equiv = pending_inr / old_rate
-                text += f"  {i}.  ₹{pending_inr:,.0f} pending @ ₹{old_rate}\n"
-                text += f"       ≈ {usdt_equiv:.2f} U owed\n"
-            elif pending_inr < 0:
-                text += f"  {i}.  ₹{abs(pending_inr):,.0f} overpaid @ ₹{old_rate}\n"
-        text += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    if s["carried_entries"]:
+        t += f"\n  📌  𝗖𝗔𝗥𝗥𝗜𝗘𝗗 𝗙𝗢𝗥𝗪𝗔𝗥𝗗\n\n"
+        for i, (usdt_pending, from_rate) in enumerate(s["carried_entries"], 1):
+            if usdt_pending > 0:
+                t += f"   {i}.  💵 {usdt_pending:,.2f} U pending\n"
+                t += f"        ↳ from rate ₹{from_rate}\n"
+            else:
+                t += f"   {i}.  💰 {abs(usdt_pending):,.2f} U overpaid\n"
+                t += f"        ↳ from rate ₹{from_rate}\n"
+        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
     # ── USDT ──
     if usdt_entries:
-        text += "\n💵 USDT\n\n"
+        t += f"\n  💵  𝗨𝗦𝗗𝗧\n\n"
         for i, (user, amount, entry_rate) in enumerate(usdt_entries, 1):
             if amount >= 0:
-                text += f"  {i}.  💵 {amount:,.2f} U  →  {user}\n"
+                t += f"   {i}.  ＋ {amount:,.2f} U  →  {user}\n"
             else:
-                text += f"  {i}.  🔻 -{abs(amount):,.2f} U  →  {user}\n"
-        text += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                t += f"   {i}.  ﹣ {abs(amount):,.2f} U  →  {user}\n"
+        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
     # ── INR ──
     if inr_entries:
-        text += "\n💰 INR\n\n"
+        t += f"\n  💰  𝗜𝗡𝗥\n\n"
         for i, (user, amount, entry_rate) in enumerate(inr_entries, 1):
             if amount >= 0:
-                text += f"  {i}.  💰 ₹{amount:,.0f}  →  {user}\n"
+                t += f"   {i}.  ＋ ₹{amount:,.0f}  →  {user}\n"
             else:
-                text += f"  {i}.  🔻 -₹{abs(amount):,.0f}  →  {user}\n"
-        text += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                t += f"   {i}.  ﹣ ₹{abs(amount):,.0f}  →  {user}\n"
+        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
-    if not rows and not carried_rows:
-        text += "\n📭 No entries yet\n"
-        text += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    if not s["ledger_rows"] and not s["carried_entries"]:
+        t += f"\n  📭 No entries yet\n"
+        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
 
     # ── SUMMARY ──
-    total_usdt = sum(a for _, a, _ in usdt_entries)
-    total_inr = sum(a for _, a, _ in inr_entries)
-    usdt_value = total_usdt * rate
-    carried_inr = sum(p for p, _ in carried_rows)
-    total_pending_inr = (usdt_value - total_inr) + carried_inr
+    gp_usdt = s["grand_pending_usdt"]
+    gp_inr = s["grand_pending_inr"]
 
-    if total_pending_inr > 0:
-        inr_pending = total_pending_inr
-        usdt_pending = total_pending_inr / rate
+    if gp_usdt > 0.001:
         status = "🔴 Pending"
-    elif total_pending_inr < 0:
-        inr_pending = abs(total_pending_inr)
-        usdt_pending = abs(total_pending_inr) / rate
+        display_usdt = gp_usdt
+        display_inr = gp_inr
+    elif gp_usdt < -0.001:
         status = "🟡 Overpaid"
+        display_usdt = abs(gp_usdt)
+        display_inr = abs(gp_inr)
     else:
-        inr_pending = 0
-        usdt_pending = 0
         status = "🟢 Settled"
+        display_usdt = 0
+        display_inr = 0
 
-    text += "\n📈 SUMMARY\n\n"
-    text += f"  💵 USDT            :  {total_usdt:,.2f} U\n"
-    text += f"  💰 INR              :  ₹{total_inr:,.0f}\n"
-    if carried_inr != 0:
-        text += f"  📌 Carried         :  ₹{carried_inr:,.0f}\n"
-    text += f"\n  💱 Rate             :  ₹{rate}\n"
-    text += f"  💵 Value           :  ₹{usdt_value:,.0f}\n"
-    text += f"\n  🏦 INR Pending  :  ₹{inr_pending:,.0f}\n"
-    text += f"  🔄 USDT Pending :  {usdt_pending:.2f} U\n"
-    text += f"\n  Status : {status}\n"
-    text += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    text += f"⚡ {BOT_NAME} Fintech Ledger"
+    t += f"\n  📈  𝗦𝗨𝗠𝗠𝗔𝗥𝗬\n\n"
+    t += f"   💵 USDT          :  {s['total_usdt']:,.2f} U\n"
+    t += f"   💰 INR             :  ₹{s['total_inr']:,.0f}\n"
+    if abs(s["carried_usdt"]) > 0.001:
+        t += f"   📌 Carried       :  {s['carried_usdt']:,.2f} U\n"
+    t += f"\n   💱 Rate            :  ₹{rate}\n"
+    t += f"   💵 Value          :  ₹{s['usdt_value_inr']:,.0f}\n"
+    t += f"\n   🏦 INR Pending  :  ₹{display_inr:,.0f}\n"
+    t += f"   🔄 USDT Pending :  {display_usdt:,.2f} U\n"
+    t += f"\n   Status : {status}\n"
+    t += f"\n✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
+    t += f"     ⚡ {BOT_NAME} Ledger\n"
+    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
 
-    await update.message.reply_text(text)
+    await update.message.reply_text(t)
 
 # ================= BALANCE ================= #
 
@@ -388,41 +437,44 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
-
-    total_usdt, total_inr, carried_inr, total_pending_inr = calculate_full_pending(chat_id, rate)
-    usdt_value = total_usdt * rate
-
-    if total_pending_inr > 0:
-        inr_pending = total_pending_inr
-        usdt_pending = total_pending_inr / rate
-        status = "🔴 Pending"
-    elif total_pending_inr < 0:
-        inr_pending = abs(total_pending_inr)
-        usdt_pending = abs(total_pending_inr) / rate
-        status = "🟡 Overpaid"
-    else:
-        inr_pending = 0
-        usdt_pending = 0
-        status = "🟢 Settled"
-
+    s = get_full_summary(chat_id, rate)
     today = now_ist().strftime('%d %b %Y')
 
-    msg = f"📊 {BOT_NAME} BALANCE\n"
-    msg += f"🗓 {today}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"  💵 USDT Total     :  {total_usdt:,.2f} U\n"
-    msg += f"  💰 INR Total       :  ₹{total_inr:,.0f}\n"
-    if carried_inr != 0:
-        msg += f"  📌 Carried Fwd   :  ₹{carried_inr:,.0f}\n"
-    msg += f"\n  💱 Rate              :  ₹{rate}\n"
-    msg += f"  💵 USDT Value    :  ₹{usdt_value:,.0f}\n"
-    msg += f"\n  🏦 INR Pending   :  ₹{inr_pending:,.0f}\n"
-    msg += f"  🔄 USDT Pending :  {usdt_pending:.2f} U\n"
-    msg += f"\n  Status : {status}\n"
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"⚡ {BOT_NAME} Fintech Ledger"
+    gp_usdt = s["grand_pending_usdt"]
+    gp_inr = s["grand_pending_inr"]
 
-    await update.message.reply_text(msg)
+    if gp_usdt > 0.001:
+        status = "🔴 Pending"
+        display_usdt = gp_usdt
+        display_inr = gp_inr
+    elif gp_usdt < -0.001:
+        status = "🟡 Overpaid"
+        display_usdt = abs(gp_usdt)
+        display_inr = abs(gp_inr)
+    else:
+        status = "🟢 Settled"
+        display_usdt = 0
+        display_inr = 0
+
+    t = ""
+    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
+    t += f"     📊  {BOT_NAME} BALANCE\n"
+    t += f"     🗓  {today}\n"
+    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n\n"
+    t += f"   💵 USDT Total     :  {s['total_usdt']:,.2f} U\n"
+    t += f"   💰 INR Total       :  ₹{s['total_inr']:,.0f}\n"
+    if abs(s["carried_usdt"]) > 0.001:
+        t += f"   📌 Carried Fwd   :  {s['carried_usdt']:,.2f} U\n"
+    t += f"\n   💱 Rate              :  ₹{rate}\n"
+    t += f"   💵 USDT Value    :  ₹{s['usdt_value_inr']:,.0f}\n"
+    t += f"\n   🏦 INR Pending   :  ₹{display_inr:,.0f}\n"
+    t += f"   🔄 USDT Pending :  {display_usdt:,.2f} U\n"
+    t += f"\n   Status : {status}\n"
+    t += f"\n✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
+    t += f"     ⚡ {BOT_NAME} Ledger\n"
+    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
+
+    await update.message.reply_text(t)
 
 # ================= TRANSACTION HANDLER ================= #
 
@@ -437,11 +489,9 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat.id)
     rate = get_rate(chat_id)
 
-    # Detect sign
     is_negative = text.startswith("-")
     sign = -1 if is_negative else 1
 
-    # Extract number (supports 4,50,000 or 450000)
     match = re.findall(r"[\d,\.]+", text)
     if not match:
         return
@@ -454,14 +504,12 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if amount == 0:
         return
 
-    # Detect currency — "u" or "U" → USDT, else INR
     text_clean = text.lower().replace(" ", "")
     if "u" in text_clean:
         currency = "USDT"
     else:
         currency = "INR"
 
-    # Insert
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -471,17 +519,17 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    # ── Confirmation ──
+    # ── Attractive confirmations ──
     if currency == "USDT":
         if amount > 0:
-            await update.message.reply_text(f"✅ +{amount:,.2f} U added @ ₹{rate}")
+            await update.message.reply_text(f"✅  💵 ＋{amount:,.2f} U  added @ ₹{rate}")
         else:
-            await update.message.reply_text(f"🔻 -{abs(amount):,.2f} U deducted @ ₹{rate}")
+            await update.message.reply_text(f"🔻  💵 ﹣{abs(amount):,.2f} U  deducted @ ₹{rate}")
     else:
         if amount > 0:
-            await update.message.reply_text(f"✅ +₹{amount:,.0f} added")
+            await update.message.reply_text(f"✅  💰 ＋₹{amount:,.0f}  added")
         else:
-            await update.message.reply_text(f"🔻 -₹{abs(amount):,.0f} deducted")
+            await update.message.reply_text(f"🔻  💰 ﹣₹{abs(amount):,.0f}  deducted")
 
 # ================= MAIN ================= #
 
@@ -490,7 +538,6 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register both lowercase and uppercase commands
     for cmd, handler in [
         ("start", start),
         ("rate", rate_cmd),
