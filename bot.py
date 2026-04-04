@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-BOT_NAME = os.getenv("BOT_NAME", "PAYUTECH")
+BOT_NAME = os.getenv("BOT_NAME", "PECUPAY PAYMENTS")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 def now_ist():
@@ -168,56 +168,55 @@ def build_ledger_text(chat_id, rate):
     usdt_entries = [(u, a, r) for u, c, a, r in s["ledger_rows"] if c == "USDT"]
     inr_entries = [(u, a, r) for u, c, a, r in s["ledger_rows"] if c == "INR"]
 
-    t = f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
-    t += f"      📊  {BOT_NAME} LEDGER\n"
-    t += f"      🗓  {today}\n"
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
+    t = f"📊 {BOT_NAME} LEDGER | 📅 {today}\n"
+    t += f"━━━━━━━━━━━━━━━━━\n"
 
     if s["carried_entries"]:
-        t += f"\n  📌  𝗖𝗔𝗥𝗥𝗜𝗘𝗗 𝗙𝗢𝗥𝗪𝗔𝗥𝗗\n\n"
+        t += f"\n📌 CARRIED FORWARD\n"
         for i, (usdt_p, from_r) in enumerate(s["carried_entries"], 1):
             if usdt_p > 0:
-                t += f"   {i}.  💵 {usdt_p:,.2f} U pending\n"
-                t += f"        ↳ from ₹{from_r}\n"
+                t += f"{i}.  🤑 {usdt_p:,.2f} U pending @ ₹{from_r}\n"
             else:
-                t += f"   {i}.  💰 {abs(usdt_p):,.2f} U overpaid\n"
-                t += f"        ↳ from ₹{from_r}\n"
-        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+                t += f"{i}.  💰 {abs(usdt_p):,.2f} U overpaid @ ₹{from_r}\n"
+        t += f"\n━━━━━━━━━━━━━━━━━\n"
 
     if usdt_entries:
-        t += f"\n  💵  𝗨𝗦𝗗𝗧\n\n"
+        t += f"\n🤑 USDT\n"
         for i, (user, amount, _) in enumerate(usdt_entries, 1):
-            sym = "＋" if amount >= 0 else "﹣"
-            t += f"   {i}.  {sym} {abs(amount):,.2f} U  →  {user}\n"
-        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+            if amount >= 0:
+                t += f"{i}.  🤑 {amount:,.2f} U → {user}\n"
+            else:
+                t += f"{i}.  🔻 -{abs(amount):,.2f} U → {user}\n"
+        t += f"\n━━━━━━━━━━━━━━━━━\n"
 
     if inr_entries:
-        t += f"\n  💰  𝗜𝗡𝗥\n\n"
+        t += f"\n💰 INR\n"
         for i, (user, amount, _) in enumerate(inr_entries, 1):
-            sym = "＋" if amount >= 0 else "﹣"
-            t += f"   {i}.  {sym} ₹{abs(amount):,.0f}  →  {user}\n"
-        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+            if amount >= 0:
+                t += f"{i}.  💰 ₹{amount:,.0f} → {user}\n"
+            else:
+                t += f"{i}.  🔻 -₹{abs(amount):,.0f} → {user}\n"
+        t += f"\n━━━━━━━━━━━━━━━━━\n"
 
     if not s["ledger_rows"] and not s["carried_entries"]:
-        t += f"\n  📭 No entries yet\n"
-        t += f"\n  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+        t += f"\n📭 No entries yet\n"
+        t += f"\n━━━━━━━━━━━━━━━━━\n"
 
     status, display_usdt = format_status(s["grand_pending_usdt"])
     display_inr = display_usdt * rate
 
-    t += f"\n  📈  𝗦𝗨𝗠𝗠𝗔𝗥𝗬\n\n"
-    t += f"   💵 USDT          :  {s['total_usdt']:,.2f} U\n"
-    t += f"   💰 INR             :  ₹{s['total_inr']:,.0f}\n"
+    t += f"\n📈 SUMMARY\n\n"
+    t += f"🤑 USDT           : {s['total_usdt']:,.2f} U\n"
+    t += f"💰 INR              : ₹{s['total_inr']:,.0f}\n"
     if abs(s["carried_usdt"]) > 0.001:
-        t += f"   📌 Carried       :  {s['carried_usdt']:,.2f} U\n"
-    t += f"\n   💱 Rate            :  ₹{rate}\n"
-    t += f"   💵 Value          :  ₹{s['usdt_value_inr']:,.0f}\n"
-    t += f"\n   🏦 INR Pending  :  ₹{display_inr:,.0f}\n"
-    t += f"   🔄 USDT Pending :  {display_usdt:,.2f} U\n"
-    t += f"\n   Status : {status}\n"
-    t += f"\n✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
-    t += f"      ⚡ {BOT_NAME} Ledger\n"
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
+        t += f"📌 Carried        : {s['carried_usdt']:,.2f} U\n"
+    t += f"\n💱 Rate             : ₹{rate}\n"
+    t += f"🤑 Value            : ₹{s['usdt_value_inr']:,.0f}\n"
+    t += f"\n🏦 INR Pending  : ₹{display_inr:,.0f}\n"
+    t += f"🔄 USDT Pending : {display_usdt:,.2f} U\n"
+    t += f"\nStatus : {status}\n"
+    t += f"━━━━━━━━━━━━━━━━━\n"
+    t += f"⚡ PecuPay Fintech Ledger 💎"
     return t
 
 def build_balance_text(chat_id, rate):
@@ -226,22 +225,19 @@ def build_balance_text(chat_id, rate):
     status, display_usdt = format_status(s["grand_pending_usdt"])
     display_inr = display_usdt * rate
 
-    t = f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
-    t += f"      📊  {BOT_NAME} BALANCE\n"
-    t += f"      🗓  {today}\n"
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n\n"
-    t += f"   💵 USDT Total     :  {s['total_usdt']:,.2f} U\n"
-    t += f"   💰 INR Total       :  ₹{s['total_inr']:,.0f}\n"
+    t = f"📊 {BOT_NAME} BALANCE | 📅 {today}\n"
+    t += f"━━━━━━━━━━━━━━━━━\n\n"
+    t += f"🤑 USDT Total    : {s['total_usdt']:,.2f} U\n"
+    t += f"💰 INR Total      : ₹{s['total_inr']:,.0f}\n"
     if abs(s["carried_usdt"]) > 0.001:
-        t += f"   📌 Carried Fwd   :  {s['carried_usdt']:,.2f} U\n"
-    t += f"\n   💱 Rate              :  ₹{rate}\n"
-    t += f"   💵 USDT Value    :  ₹{s['usdt_value_inr']:,.0f}\n"
-    t += f"\n   🏦 INR Pending   :  ₹{display_inr:,.0f}\n"
-    t += f"   🔄 USDT Pending :  {display_usdt:,.2f} U\n"
-    t += f"\n   Status : {status}\n"
-    t += f"\n✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
-    t += f"      ⚡ {BOT_NAME} Ledger\n"
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
+        t += f"📌 Carried Fwd  : {s['carried_usdt']:,.2f} U\n"
+    t += f"\n💱 Rate             : ₹{rate}\n"
+    t += f"🤑 USDT Value   : ₹{s['usdt_value_inr']:,.0f}\n"
+    t += f"\n🏦 INR Pending  : ₹{display_inr:,.0f}\n"
+    t += f"🔄 USDT Pending : {display_usdt:,.2f} U\n"
+    t += f"\nStatus : {status}\n"
+    t += f"━━━━━━━━━━━━━━━━━\n"
+    t += f"⚡ PecuPay Fintech Ledger 💎"
     return t
 
 def build_entries_text(chat_id):
@@ -258,22 +254,24 @@ def build_entries_text(chat_id):
         return "📭 No entries yet"
 
     today = now_ist().strftime('%d %b %Y')
-    t = f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
-    t += f"      📝  {BOT_NAME} ENTRIES\n"
-    t += f"      🗓  {today}\n"
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n\n"
+    t = f"📝 {BOT_NAME} ENTRIES | 📅 {today}\n"
+    t += f"━━━━━━━━━━━━━━━━━\n\n"
 
     for i, (user, currency, amount, rate, created) in enumerate(rows, 1):
-        sym = "＋" if amount >= 0 else "﹣"
         if currency == "USDT":
-            t += f"  {i}. {sym} 💵 {abs(amount):,.2f} U @ ₹{rate}\n"
+            if amount >= 0:
+                t += f"{i}. 🤑 +{abs(amount):,.2f} U @ ₹{rate}\n"
+            else:
+                t += f"{i}. 🔻 -{abs(amount):,.2f} U @ ₹{rate}\n"
         else:
-            t += f"  {i}. {sym} 💰 ₹{abs(amount):,.0f}\n"
-        t += f"      {user}  ·  {created.strftime('%d %b %H:%M')}\n\n"
+            if amount >= 0:
+                t += f"{i}. 💰 +₹{abs(amount):,.0f}\n"
+            else:
+                t += f"{i}. 🔻 -₹{abs(amount):,.0f}\n"
+        t += f"    {user} · {created.strftime('%d %b %H:%M')}\n\n"
 
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦\n"
-    t += f"      ⚡ {BOT_NAME} Ledger\n"
-    t += f"✦━━━━━━━━━━━━━━━━━━━━━━━━━✦"
+    t += f"━━━━━━━━━━━━━━━━━\n"
+    t += f"⚡ PecuPay Fintech Ledger 💎"
     return t
 
 def build_total_text(chat_id, rate):
@@ -281,12 +279,13 @@ def build_total_text(chat_id, rate):
     status, display_usdt = format_status(s["grand_pending_usdt"])
     display_inr = display_usdt * rate
 
-    t = f"📊 {BOT_NAME} TOTAL\n\n"
-    t += f"  💵 USDT  :  {s['total_usdt']:,.2f} U\n"
-    t += f"  💰 INR    :  ₹{s['total_inr']:,.0f}\n"
-    t += f"  💱 Rate   :  ₹{rate}\n\n"
-    t += f"  🔄 Pending :  {display_usdt:,.2f} U  ≈  ₹{display_inr:,.0f}\n"
-    t += f"  Status : {status}"
+    t = f"📊 {BOT_NAME} TOTAL\n"
+    t += f"━━━━━━━━━━━━━━━━━\n\n"
+    t += f"🤑 USDT  : {s['total_usdt']:,.2f} U\n"
+    t += f"💰 INR    : ₹{s['total_inr']:,.0f}\n"
+    t += f"💱 Rate   : ₹{rate}\n\n"
+    t += f"🔄 Pending : {display_usdt:,.2f} U ≈ ₹{display_inr:,.0f}\n"
+    t += f"Status : {status}"
     return t
 
 # ================= COMMAND HANDLERS ================= #
@@ -295,28 +294,26 @@ async def do_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[CMD] /start from {update.message.from_user.first_name}")
     if update.message.chat.type == "private":
         await update.message.reply_text(
-f"""✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
-       ⚡  {BOT_NAME}  ⚡
-✦━━━━━━━━━━━━━━━━━━━━━━━━━✦
+f"""⚡ {BOT_NAME} LEDGER BOT
 
-  📋  𝗖𝗢𝗠𝗠𝗔𝗡𝗗𝗦
+📋 COMMANDS
+━━━━━━━━━━━━━━━━━
+/rate ‹amt›  -  💱 Set rate
+/ledger        -  📒 Full ledger
+/balance      -  📊 Balance
+/entries       -  📝 All entries
+/total           -  📊 Quick total
+/undo          -  ↩️ Remove last
+/clear          -  🗑 Clear all
 
-  /rate ‹amt›    ─  💱 Set rate
-  /ledger          ─  📒 Full ledger
-  /balance        ─  📊 Balance
-  /entries         ─  📝 All entries
-  /total             ─  📊 Quick total
-  /undo            ─  ↩️ Remove last
-  /clear            ─  🗑 Clear all
-
-  💱  𝗘𝗡𝗧𝗥𝗜𝗘𝗦
-
-  5000u     ➜  ＋5000 USDT 💵
-  89000     ➜  ＋₹89,000 💰
-  -2000u   ➜  ﹣2000 USDT 🔻
-  -50000   ➜  ﹣₹50,000 🔻
-
-✦━━━━━━━━━━━━━━━━━━━━━━━━━✦""")
+💱 ENTRIES
+━━━━━━━━━━━━━━━━━
+5000u    →  +5000 USDT 🤑
+89000    →  +₹89,000 💰
+-2000u  →  -2000 USDT 🔻
+-50000  →  -₹50,000 🔻
+━━━━━━━━━━━━━━━━━
+⚡ PecuPay Fintech Ledger 💎""")
     else:
         await update.message.reply_text(f"⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘\n\n💱 /rate 95\n📒 /ledger\n📊 /balance")
 
@@ -458,14 +455,14 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if currency == "USDT":
             if amount > 0:
-                await update.message.reply_text(f"✅  💵  ＋ {amount:,.2f} U  added @ ₹{rate}")
+                await update.message.reply_text(f"✅ 🤑 +{amount:,.2f} U added @ ₹{rate}")
             else:
-                await update.message.reply_text(f"🔻  💵  ﹣ {abs(amount):,.2f} U  deducted @ ₹{rate}")
+                await update.message.reply_text(f"🔻 🤑 -{abs(amount):,.2f} U deducted @ ₹{rate}")
         else:
             if amount > 0:
-                await update.message.reply_text(f"✅  💰  ＋ ₹{amount:,.0f}  added")
+                await update.message.reply_text(f"✅ 💰 +₹{amount:,.0f} added")
             else:
-                await update.message.reply_text(f"🔻  💰  ﹣ ₹{abs(amount):,.0f}  deducted")
+                await update.message.reply_text(f"🔻 💰 -₹{abs(amount):,.0f} deducted")
 
     except Exception as e:
         print(f"[TX ERROR] {e}")
