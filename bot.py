@@ -20,7 +20,7 @@ RATE = 100
 # ================= DB ================= #
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 def init_db():
     conn = get_conn()
@@ -67,11 +67,11 @@ def get_summary(chat_id):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT SUM(amount) FROM ledger WHERE chat_id=%s AND currency='USDT'", (chat_id,))
-    usdt = cur.fetchone()[0] or 0
+    cur.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE chat_id=%s AND currency='USDT'", (chat_id,))
+    usdt = cur.fetchone()[0]
 
-    cur.execute("SELECT SUM(amount) FROM ledger WHERE chat_id=%s AND currency='INR'", (chat_id,))
-    inr = cur.fetchone()[0] or 0
+    cur.execute("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE chat_id=%s AND currency='INR'", (chat_id,))
+    inr = cur.fetchone()[0]
 
     conn.close()
 
@@ -141,7 +141,7 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "INSERT INTO ledger (chat_id,user_name,currency,amount) VALUES (%s,%s,'USDT',%s)",
                 (chat_id, user, amount)
             )
-            msg = f"✅ 💵 {amount} U added"
+            msg = f"✅ 💵 {amount:.2f} U added"
 
         elif "inr" in text:
             amount = clean_amount(text)
