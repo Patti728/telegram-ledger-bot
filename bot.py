@@ -56,7 +56,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         return False
 
-# ================= SPLIT LOGIC ================= #
+# ================= CALC ================= #
 
 def calculate_pending(chat_id):
     conn = get_conn()
@@ -82,37 +82,6 @@ def calculate_pending(chat_id):
 
     return total
 
-# ================= OWNER ================= #
-
-def get_owner_stats():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT 
-        SUM(CASE WHEN currency='USDT' THEN amount ELSE 0 END),
-        SUM(CASE WHEN currency='INR' THEN amount ELSE 0 END)
-        FROM ledger
-    """)
-
-    usdt, inr = cur.fetchone()
-    conn.close()
-
-    return usdt or 0, inr or 0
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != OWNER_ID:
-        return
-
-    usdt, inr = get_owner_stats()
-
-    await update.message.reply_text(f"""
-📊 OWNER PANEL
-
-💵 USDT: {usdt:.2f}
-💰 INR : ₹{inr:,.0f}
-""")
-
 # ================= COMMANDS ================= #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,10 +93,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global RATE
-
     if not await is_admin(update, context):
         return
-
     try:
         RATE = float(context.args[0])
         await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
@@ -165,7 +132,9 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    await update.message.reply_text("🗑 Cleared")
+    await update.message.reply_text("🗑 Ledger Cleared")
+
+# ================= LEDGER ================= #
 
 async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
@@ -177,35 +146,20 @@ async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT rate,
-        SUM(CASE WHEN currency='USDT' THEN amount ELSE 0 END),
-        SUM(CASE WHEN currency='INR' THEN amount ELSE 0 END)
+        SELECT user_name, currency, amount, rate
         FROM ledger
         WHERE chat_id=%s
-        GROUP BY rate
-        ORDER BY rate
+        ORDER BY id
     """, (chat_id,))
 
     rows = cur.fetchall()
     conn.close()
 
-    text = "📒 PAYUTECH LEDGER\n\n"
-    total = 0
+    text = f"📒 PAYUTECH LEDGER | 📅 {datetime.now().strftime('%d %b %Y')}\n\n"
 
-    for i, (rate, usdt, inr) in enumerate(rows, 1):
-        usdt = usdt or 0
-        inr = inr or 0
-        diff = (inr / rate) - usdt
-        total += diff
+    for i, (user, currency, amount, rate) in enumerate(rows, 1):
+        text += f"{i}. {user} → {currency} {amount} @ ₹{rate}\n"
 
-        text += f"""Day {i} (₹{rate})
-USDT: {usdt:.2f}
-INR : ₹{inr:,.0f}
-Diff: {diff:.2f} U
-
-"""
-
-    text += f"━━━━━━━━━━━━\nPending: {total:.2f} U"
     await update.message.reply_text(text)
 
 # ================= TRANSACTION ================= #
@@ -241,8 +195,9 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_conn()
     cur = conn.cursor()
 
+    # ✅ FIXED SQL
     cur.execute(
-        "INSERT INTO ledger (chat_id,user_name,currency,amount,rate) VALUES (%s,%s,%s,%s,%s)",
+        "INSERT INTO ledger (chat_id, user_name, currency, amount, rate) VALUES (%s, %s, %s, %s, %s)",
         (chat_id, user, currency, amount, RATE)
     )
 
@@ -250,7 +205,7 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     await update.message.reply_text(
-        f"{'➖' if amount<0 else '✅'} {currency} {abs(amount)} @ ₹{RATE}"
+        f"{'➖' if amount < 0 else '✅'} {currency} {abs(amount)} @ ₹{RATE}"
     )
 
 # ================= MAIN ================= #
@@ -266,7 +221,6 @@ def main():
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("ledger", ledger))
     app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("admin", admin_panel))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
 
