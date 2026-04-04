@@ -49,7 +49,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         return False
 
-# ================= SPLIT LOGIC (FIXED) ================= #
+# ================= SPLIT LOGIC (FINAL) ================= #
 
 def calculate_pending(chat_id):
     conn = get_conn()
@@ -65,15 +65,15 @@ def calculate_pending(chat_id):
     rows = cur.fetchall()
     conn.close()
 
-    net_usdt = 0
+    pending_usdt = 0
 
     for currency, amount, rate in rows:
         if currency == "USDT":
-            net_usdt -= amount
+            pending_usdt += amount
         else:
-            net_usdt += amount / rate
+            pending_usdt -= amount / rate
 
-    return net_usdt
+    return pending_usdt
 
 # ================= COMMANDS ================= #
 
@@ -88,12 +88,25 @@ async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global RATE
     if not await is_admin(update, context):
         return
-
     try:
         RATE = float(context.args[0])
         await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
     except:
         await update.message.reply_text("❌ Use: /rate 98")
+
+async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context):
+        return
+
+    chat_id = str(update.message.chat.id)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ledger WHERE chat_id=%s", (chat_id,))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text("🗑 Ledger Cleared")
 
 # ================= LEDGER ================= #
 
@@ -127,20 +140,19 @@ async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inr_list.append((user, amount))
             total_inr += amount
 
-    # 🔥 CORRECT SPLIT LOGIC
-    net = calculate_pending(chat_id)
+    # 🔥 CORRECT PENDING
+    pending_usdt = calculate_pending(chat_id)
 
-    if net > 0:
-        usdt_pending = net
+    if pending_usdt > 0:
+        usdt_pending = pending_usdt
         inr_pending = 0
     else:
         usdt_pending = 0
-        inr_pending = abs(net) * RATE
+        inr_pending = abs(pending_usdt) * RATE
 
     status = "🔴 Pending" if (usdt_pending or inr_pending) else "🟢 Balanced"
 
-    # ================= UI ================= #
-
+    # UI
     text = f"""📊 PECUPAY LEDGER | 📅 {datetime.now().strftime('%d %b %Y')}
 
 ━━━━━━━━━━━━━━
@@ -199,7 +211,6 @@ async def handle_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     amount = float(match[0].replace(",", "")) * sign
 
-    # currency detect
     if "u" in text:
         currency = "USDT"
     else:
@@ -229,6 +240,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("rate", set_rate))
     app.add_handler(CommandHandler("ledger", ledger))
+    app.add_handler(CommandHandler("clear", clear))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tx))
 
