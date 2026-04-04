@@ -49,7 +49,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         return False
 
-# ================= SPLIT LOGIC (FINAL) ================= #
+# ================= SPLIT LOGIC (USDT ONLY) ================= #
 
 def calculate_pending(chat_id):
     conn = get_conn()
@@ -88,6 +88,7 @@ async def set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global RATE
     if not await is_admin(update, context):
         return
+
     try:
         RATE = float(context.args[0])
         await update.message.reply_text(f"💱 Rate set to ₹{RATE}")
@@ -140,19 +141,14 @@ async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inr_list.append((user, amount))
             total_inr += amount
 
-    # 🔥 CORRECT PENDING
+    # 🔥 CORRECT FINAL LOGIC
     pending_usdt = calculate_pending(chat_id)
 
-    if pending_usdt > 0:
-        usdt_pending = pending_usdt
-        inr_pending = 0
-    else:
-        usdt_pending = 0
-        inr_pending = abs(pending_usdt) * RATE
+    usdt_pending = abs(pending_usdt) if pending_usdt != 0 else 0
+    status = "🔴 Pending" if usdt_pending > 0 else "🟢 Balanced"
 
-    status = "🔴 Pending" if (usdt_pending or inr_pending) else "🟢 Balanced"
+    # ================= UI ================= #
 
-    # UI
     text = f"""📊 PECUPAY LEDGER | 📅 {datetime.now().strftime('%d %b %Y')}
 
 ━━━━━━━━━━━━━━
@@ -180,7 +176,6 @@ async def ledger(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💱 Rate : ₹{RATE}
 💰 Value: ₹{total_usdt * RATE:,.0f}
 
-⚖️ INR Pending : ₹{inr_pending:,.0f}
 🔄 USDT Pending: {usdt_pending:.2f} U
 
 Status : {status}
