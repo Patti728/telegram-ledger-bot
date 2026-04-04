@@ -14,7 +14,7 @@ from telegram.ext import (
 # ================= CONFIG ================= #
 
 TOKEN = os.getenv("8646101570:AAGLhe9jMnBbZo_3U1SmuTOrKl0T78ebpJA")
-DATABASE_URL = os.getenv("postgresql://postgres:cFYGCNhajBBfGVjIQjMmrbJhzEebvHus@junction.proxy.rlwy.net:17523/railway")
+DATABASE_URL = os.getenv("postgresql://postgres:cFYGCNhajBBfGVjIQjMmrbJhzEebvHus@postgres.railway.internal:5432/railway")
 RATE = 100
 
 # ================= DB ================= #
