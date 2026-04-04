@@ -45,6 +45,8 @@ def init_db():
     )
     """)
 
+    cur.execute("DROP TABLE IF EXISTS carried_pending")
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS carried_pending (
         id SERIAL PRIMARY KEY,
