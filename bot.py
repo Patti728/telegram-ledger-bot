@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-BOT_NAME = os.getenv("BOT_NAME", "PECUPAY PAYMENTS")
+BOT_NAME = os.getenv("BOT_NAME", "PAYU TECH PAYMENTS")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 def now_ist():
@@ -216,7 +216,7 @@ def build_ledger_text(chat_id, rate):
     t += f"🔄 USDT Pending : {display_usdt:,.2f} U\n"
     t += f"\nStatus : {status}\n"
     t += f"━━━━━━━━━━━━━━━━━\n"
-    t += f"⚡ PecuPay Fintech Ledger 💎"
+    t += f"⚡ PAY U  Fintech Ledger 💎"
     return t
 
 def build_balance_text(chat_id, rate):
@@ -237,7 +237,7 @@ def build_balance_text(chat_id, rate):
     t += f"🔄 USDT Pending : {display_usdt:,.2f} U\n"
     t += f"\nStatus : {status}\n"
     t += f"━━━━━━━━━━━━━━━━━\n"
-    t += f"⚡ PecuPay Fintech Ledger 💎"
+    t += f"⚡ PAY U  Fintech Ledger 💎"
     return t
 
 def build_entries_text(chat_id):
@@ -271,7 +271,7 @@ def build_entries_text(chat_id):
         t += f"    {user} · {created.strftime('%d %b %H:%M')}\n\n"
 
     t += f"━━━━━━━━━━━━━━━━━\n"
-    t += f"⚡ PecuPay Fintech Ledger 💎"
+    t += f"⚡ PAY U Fintech Ledger 💎"
     return t
 
 def build_total_text(chat_id, rate):
@@ -313,7 +313,7 @@ f"""⚡ {BOT_NAME} LEDGER BOT
 -2000u  →  -2000 USDT 🔻
 -50000  →  -₹50,000 🔻
 ━━━━━━━━━━━━━━━━━
-⚡ PecuPay Fintech Ledger 💎""")
+⚡ PAY U Fintech Ledger 💎""")
     else:
         await update.message.reply_text(f"⚡ {BOT_NAME} 𝗔𝗖𝗧𝗜𝗩𝗘\n\n💱 /rate 95\n📒 /ledger\n📊 /balance")
 
